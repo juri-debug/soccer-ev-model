@@ -1,0 +1,2260 @@
+"""Streamlit web UI for the football score predictor."""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+
+from src.club_logos import logo as club_logo, has_logos
+from src.flags import flagged
+from src.predictor import PredictorBundle
+from src.real_groups import REAL_GROUPS, resolve_groups
+from src.tournament import (
+    FORMATS, current_state_for, get_actual_results, predict_group_fixtures,
+    predict_modal_bracket, sample_one_tournament, simulate_knockout, simulate_league,
+    top_n_by_elo,
+)
+from src.unlock import verify_token
+import app_api_client as api_client
+
+_FAVICON = ROOT / "assets" / "favicon.png"
+st.set_page_config(page_title="WC2026 Picks", layout="wide",
+                   page_icon=str(_FAVICON) if _FAVICON.exists() else ":soccer:")
+
+# Legal pages (?page=terms|privacy|refunds) render standalone and stop, so the
+# main app + paywall never run for those URLs. Must come before any heavy work.
+_legal_page = st.query_params.get("page")
+if _legal_page:
+    _did_legal = False
+    try:
+        from src.legal import render_legal_page
+        _did_legal = render_legal_page(_legal_page)
+    except Exception:
+        _did_legal = False
+    # st.stop() raises a StopException (a subclass of Exception), so it MUST be
+    # outside the try above or it would be swallowed and the main app would also
+    # render underneath the legal page.
+    if _did_legal:
+        st.stop()
+
+# ============================================================================
+# Custom styling - dark theme, custom fonts, hero section, footer
+# ============================================================================
+_CUSTOM_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
+
+html, body, [class*="css"], .stApp, .stMarkdown, p, label, div {
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+.stApp {
+    background: radial-gradient(ellipse at top, #16203a 0%, #11151c 55%) !important;
+}
+
+h1, h2, h3, h4, h5 {
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
+    letter-spacing: -0.02em !important;
+    font-weight: 700 !important;
+}
+
+/* ----- Hero ----- */
+.hero {
+    background: linear-gradient(135deg, #11224a 0%, #3a1020 100%);
+    border-radius: 20px;
+    padding: 2.2rem 2.5rem;
+    margin: 0 0 2rem 0;
+    border: 1px solid rgba(37, 99, 235, 0.18);
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 4px 32px rgba(0, 0, 0, 0.3);
+}
+.hero::before {
+    content: '';
+    position: absolute;
+    top: -40%;
+    right: -10%;
+    width: 380px;
+    height: 380px;
+    background: radial-gradient(circle, rgba(37, 99, 235, 0.18) 0%, transparent 65%);
+    pointer-events: none;
+}
+.hero::after {
+    content: '';
+    position: absolute;
+    bottom: -50%;
+    left: -10%;
+    width: 320px;
+    height: 320px;
+    background: radial-gradient(circle, rgba(225, 29, 72, 0.14) 0%, transparent 65%);
+    pointer-events: none;
+}
+.hero-content { position: relative; z-index: 2; }
+.hero h1 {
+    font-size: 2.6rem !important;
+    font-weight: 800 !important;
+    margin: 0 0 0.4rem 0 !important;
+    background: linear-gradient(95deg, #3b82f6 0%, #e11d48 52%, #f59e0b 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    line-height: 1.1;
+}
+.hero-subtitle {
+    color: #cbd5e1;
+    font-size: 1.05rem;
+    margin: 0 0 1.1rem 0;
+    max-width: 720px;
+    line-height: 1.5;
+}
+.hero-stats { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.stat-pill {
+    background: rgba(37, 99, 235, 0.10);
+    border: 1px solid rgba(37, 99, 235, 0.35);
+    color: #3b82f6;
+    padding: 0.38rem 0.95rem;
+    border-radius: 100px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+.stat-pill.gold {
+    background: rgba(245, 158, 11, 0.08);
+    border-color: rgba(245, 158, 11, 0.3);
+    color: #f59e0b;
+}
+.stat-pill.red {
+    background: rgba(225, 29, 72, 0.10);
+    border-color: rgba(225, 29, 72, 0.35);
+    color: #fb7185;
+}
+
+/* ----- Animated probability bars (match detail) ----- */
+.prob-wrap { margin: 0.4rem 0 1.1rem; }
+.prob-row {
+    display: flex; align-items: center; gap: 0.6rem; margin: 0.45rem 0;
+}
+.prob-label {
+    flex: 0 0 132px; font-weight: 600; color: #e2e8f0; font-size: 0.9rem;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.prob-track {
+    flex: 1; height: 26px; background: rgba(255,255,255,0.05);
+    border-radius: 7px; overflow: hidden; position: relative;
+}
+.prob-fill {
+    height: 100%; border-radius: 7px; width: 0;
+    animation: probGrow 0.9s cubic-bezier(.2,.8,.2,1) forwards;
+    display: flex; align-items: center; justify-content: flex-end;
+    padding-right: 8px; color: #fff; font-weight: 700; font-size: 0.82rem;
+    font-family: 'JetBrains Mono', monospace;
+}
+.prob-fill.h { background: linear-gradient(90deg, #1d4ed8, #3b82f6); }
+.prob-fill.d { background: linear-gradient(90deg, #475569, #94a3b8); }
+.prob-fill.a { background: linear-gradient(90deg, #be123c, #fb7185); }
+@keyframes probGrow { from { width: 0; } to { width: var(--pct); } }
+
+/* ----- Team hover cards ----- */
+.team-hc { position: relative; cursor: default; border-bottom: 1px dotted rgba(255,255,255,0.25); }
+.team-hc .hc-pop {
+    visibility: hidden; opacity: 0; transition: opacity 0.15s ease;
+    position: absolute; bottom: 130%; left: 0; z-index: 50;
+    background: #0f1626; border: 1px solid rgba(37,99,235,0.4);
+    border-radius: 9px; padding: 0.55rem 0.7rem; min-width: 150px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45); font-size: 0.74rem;
+    color: #cbd5e1; font-weight: 500; line-height: 1.5; white-space: nowrap;
+}
+.team-hc .hc-pop b { color: #f8fafc; }
+.team-hc .hc-pop .hc-gold { color: #f59e0b; }
+.team-hc:hover .hc-pop { visibility: visible; opacity: 1; }
+.tc { font-weight: 700; letter-spacing: 0.03em; font-family: 'JetBrains Mono', monospace;
+      font-size: 0.92em; }
+
+/* ----- Metric cards ----- */
+[data-testid="stMetric"], [data-testid="metric-container"] {
+    background: rgba(19, 24, 37, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    transition: border-color 0.2s ease;
+}
+[data-testid="stMetric"]:hover, [data-testid="metric-container"]:hover {
+    border-color: rgba(37, 99, 235, 0.3);
+}
+[data-testid="stMetricValue"] {
+    font-family: 'Plus Jakarta Sans', sans-serif !important;
+    font-weight: 700 !important;
+    font-size: 1.6rem !important;
+    color: #f8fafc !important;
+}
+[data-testid="stMetricLabel"] {
+    color: #94a3b8 !important;
+    font-weight: 500 !important;
+    font-size: 0.85rem !important;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+/* ----- Buttons ----- */
+.stButton > button, .stDownloadButton > button {
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    transition: all 0.18s ease !important;
+    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+.stButton > button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.22);
+    border-color: rgba(37, 99, 235, 0.4) !important;
+}
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
+    border-color: rgba(37, 99, 235, 0.55) !important;
+}
+
+/* ----- Tabs ----- */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0.4rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.stTabs [data-baseweb="tab"] {
+    border-radius: 10px 10px 0 0 !important;
+    padding: 0.55rem 1.1rem !important;
+    font-weight: 600 !important;
+    background: transparent !important;
+}
+.stTabs [aria-selected="true"] {
+    background: rgba(37, 99, 235, 0.1) !important;
+    color: #3b82f6 !important;
+}
+
+/* ----- Sidebar ----- */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #10141d 0%, #11151c 100%) !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.05);
+}
+section[data-testid="stSidebar"] h1 {
+    font-size: 1.5rem !important;
+    background: linear-gradient(95deg, #3b82f6 0%, #f59e0b 90%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* ----- DataFrames ----- */
+[data-testid="stDataFrame"] {
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* ----- Success/warning/info banners ----- */
+[data-testid="stAlert"] {
+    border-radius: 10px !important;
+}
+
+/* ----- Expanders ----- */
+[data-testid="stExpander"] details {
+    background: rgba(19, 24, 37, 0.4) !important;
+    border: 1px solid rgba(255, 255, 255, 0.06) !important;
+    border-radius: 10px !important;
+}
+
+/* ----- Numbers in mono ----- */
+.score-mono {
+    font-family: 'JetBrains Mono', monospace !important;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+}
+
+/* ----- Footer ----- */
+.custom-footer {
+    text-align: center;
+    padding: 2.5rem 0 1rem;
+    margin-top: 4rem;
+    color: #64748b;
+    font-size: 0.82rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    line-height: 1.7;
+}
+.custom-footer a { color: #3b82f6; text-decoration: none; font-weight: 500; }
+.custom-footer a:hover { text-decoration: underline; }
+
+/* ----- Hide default chrome ----- */
+#MainMenu, footer:not(.custom-footer), header[data-testid="stHeader"] {
+    visibility: hidden;
+    height: 0;
+}
+.block-container { padding-top: 1.5rem !important; }
+
+/* ----- Group stage cards ----- */
+.gc-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 1rem;
+    margin-bottom: 0.5rem;
+}
+.group-card {
+    background: linear-gradient(180deg, rgba(26,32,48,0.88) 0%, rgba(16,20,29,0.96) 100%);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 14px;
+    padding: 0.9rem 1rem 1rem;
+    box-shadow: 0 2px 14px rgba(0,0,0,0.18);
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.group-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 10px 28px rgba(37,99,235,0.18);
+    border-color: rgba(37,99,235,0.35);
+}
+.group-card .gc-header {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    margin-bottom: 0.6rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+.group-card .gc-letter {
+    font-weight: 800;
+    font-size: 1.05rem;
+    background: linear-gradient(95deg, #3b82f6 0%, #f59e0b 90%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    letter-spacing: 0.03em;
+}
+.group-card table.gc-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 0.75rem;
+    font-size: 0.82rem;
+}
+.group-card table.gc-table {
+    table-layout: fixed;
+}
+.group-card table.gc-table th, .group-card table.gc-table td {
+    padding: 5px 4px;
+    text-align: right;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.group-card table.gc-table th { color: #94a3b8; font-weight: 600; font-size: 0.7rem;
+    text-transform: uppercase; letter-spacing: 0.04em; }
+.group-card table.gc-table th.team-th, .group-card table.gc-table td.team-cell {
+    text-align: left; color: #f1f5f9; font-weight: 500; width: auto;
+}
+.group-card table.gc-table td.pos-cell { text-align: center; color: #94a3b8; width: 22px;
+    font-family: 'JetBrains Mono', monospace; padding-left: 0; padding-right: 2px; }
+.group-card table.gc-table th.num, .group-card table.gc-table td.num { width: 34px; }
+.group-card table.gc-table th.gfga, .group-card table.gc-table td.gfga { width: 48px; }
+.group-card table.gc-table th.gd-col, .group-card table.gc-table td.gd-col { width: 36px; }
+.group-card table.gc-table th.pts-col, .group-card table.gc-table td.pts-col { width: 36px; }
+.group-card table.gc-table td.pts-cell { font-weight: 700; color: #f8fafc;
+    font-family: 'JetBrains Mono', monospace; }
+.group-card tr.adv-q td.pos-cell { color: #3b82f6; }
+.group-card tr.adv-q td.pos-cell::before { content: ""; display: inline-block; width: 3px;
+    height: 14px; background: #2563eb; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.group-card tr.adv-t td.pos-cell { color: #f59e0b; }
+.group-card tr.adv-t td.pos-cell::before { content: ""; display: inline-block; width: 3px;
+    height: 14px; background: #f59e0b; border-radius: 2px; margin-right: 6px; vertical-align: middle; }
+.group-card .gc-fixtures-label {
+    font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em;
+    color: #94a3b8; font-weight: 600; margin: 0.2rem 0 0.35rem;
+}
+.group-card .gc-fixtures { font-size: 0.78rem; color: #cbd5e1; }
+.group-card .gc-fixtures .fx-link { text-decoration: none; display: block;
+    border-radius: 7px; transition: background 0.13s ease; }
+.group-card .gc-fixtures .fx-link:hover { background: rgba(37,99,235,0.14); }
+.group-card .gc-fixtures .fx {
+    display: flex; align-items: center; gap: 0.35rem;
+    padding: 5px 6px; border-bottom: 1px dashed rgba(255,255,255,0.05);
+}
+.group-card .gc-fixtures .fx-link:last-child .fx { border-bottom: none; }
+.group-card .gc-fixtures .fx .fx-date { flex: 0 0 46px; color: #64748b; font-size: 0.68rem; }
+.group-card .gc-fixtures .fx .fx-home,
+.group-card .gc-fixtures .fx .fx-away  {
+    flex: 1 1 0; min-width: 0; color: #e2e8f0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.group-card .gc-fixtures .fx .fx-home  { text-align: right; }
+.group-card .gc-fixtures .fx .fx-away  { text-align: left; }
+.group-card .gc-fixtures .fx .fx-score {
+    font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 0.85rem;
+    color: #f8fafc; padding: 1px 8px; min-width: 44px; text-align: center;
+    background: rgba(255,255,255,0.05); border-radius: 5px;
+}
+.group-card .gc-fixtures .fx.played .fx-score { background: rgba(37,99,235,0.2);
+    color: #60a5fa; }
+.group-card .gc-fixtures .fx .fx-go {
+    flex: 0 0 8px; color: #475569; font-weight: 700; transition: color 0.13s ease;
+}
+.group-card .gc-fixtures .fx-link:hover .fx-go { color: #3b82f6; }
+
+/* ----- Knockout bracket ----- */
+.bracket-wrap {
+    display: flex; gap: 0.6rem; overflow-x: auto; padding: 1rem 0.4rem 0.5rem;
+    align-items: stretch;
+}
+.bracket-round {
+    display: flex; flex-direction: column; justify-content: space-around;
+    min-width: 195px; flex: 1; gap: 0.55rem;
+}
+.bracket-round-title {
+    text-align: center; color: #94a3b8; font-size: 0.74rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.3rem;
+}
+.bracket-match {
+    background: linear-gradient(180deg, rgba(26,32,48,0.88) 0%, rgba(16,20,29,0.96) 100%);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-left: 3px solid rgba(37,99,235,0.5);
+    border-radius: 8px;
+    padding: 0.45rem 0.6rem;
+    font-size: 0.8rem;
+    box-shadow: 0 1px 6px rgba(0,0,0,0.18);
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+    box-sizing: border-box;
+}
+.bracket-match:hover {
+    transform: scale(1.03);
+    box-shadow: 0 6px 18px rgba(37,99,235,0.25);
+}
+.bm-link { text-decoration: none; display: block; }
+.bm-link:hover .bracket-match { border-color: rgba(37,99,235,0.5); }
+.bracket-match.pens { border-left-color: rgba(245,158,11,0.7); }
+.bracket-match.played { border-left-color: rgba(34,211,238,0.7); }
+.bracket-match .bm-side {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 2px 0; gap: 0.4rem;
+}
+.bracket-match .bm-side .team {
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: #cbd5e1; font-weight: 500;
+}
+.bracket-match .bm-side.winner .team { color: #f8fafc; font-weight: 700; }
+.bracket-match .bm-side.loser  .team { color: #64748b; }
+.bracket-match .bm-side .gs {
+    font-family: 'JetBrains Mono', monospace; font-weight: 700;
+    min-width: 20px; text-align: right;
+}
+.bracket-match .bm-side.winner .gs { color: #3b82f6; }
+.bracket-match .bm-side.loser  .gs { color: #64748b; }
+.bracket-match .bm-meta {
+    margin-top: 4px; padding-top: 4px; border-top: 1px dashed rgba(255,255,255,0.05);
+    font-size: 0.66rem; color: #94a3b8; text-align: center; letter-spacing: 0.04em;
+}
+.bracket-champion {
+    background: linear-gradient(135deg, #7f1d1d 0%, #422006 100%);
+    border: 1px solid rgba(245,158,11,0.5);
+    border-radius: 12px;
+    padding: 1rem;
+    text-align: center;
+    font-weight: 700;
+    margin-top: 1rem;
+}
+.bracket-champion .ch-label { color: #f59e0b; text-transform: uppercase;
+    letter-spacing: 0.1em; font-size: 0.7rem; }
+.bracket-champion .ch-team { color: #fef3c7; font-size: 1.3rem; margin-top: 0.3rem; }
+
+/* ----- Mobile tweaks ----- */
+@media (max-width: 768px) {
+    .hero { padding: 1.5rem 1.3rem; }
+    .hero h1 { font-size: 1.8rem !important; }
+    .hero-subtitle { font-size: 0.95rem; }
+    [data-testid="stMetricValue"] { font-size: 1.3rem !important; }
+    /* Stack the knockout rounds vertically on phones instead of a wide
+       sideways scroll — far easier to read round by round. */
+    .bracket-wrap { flex-direction: column; overflow-x: visible; gap: 1.2rem; }
+    .bracket-round { min-width: 100%; flex: none; }
+    .bracket-round-title { font-size: 0.82rem; padding-top: 0.4rem;
+        border-top: 1px solid rgba(255,255,255,0.08); }
+}
+</style>
+"""
+st.markdown(_CUSTOM_CSS, unsafe_allow_html=True)
+
+_HERO_HTML = """
+<div class="hero">
+  <div class="hero-content">
+    <h1>WC2026 Picks</h1>
+    <p class="hero-subtitle">
+      Free predictions for your <strong style="color:#f59e0b">2026 World Cup
+      office pool</strong>. For every match it gives the score most likely to win
+      you points, set to whatever rules your contest uses. Built on a calibrated
+      statistical model (Dixon-Coles, Pi-rating, machine learning). The whole
+      tournament is free to use this World Cup.
+    </p>
+    <div class="hero-stats">
+      <span class="stat-pill">Calibrated model</span>
+      <span class="stat-pill red">Bookmaker-level accuracy</span>
+      <span class="stat-pill gold">Free this World Cup</span>
+    </div>
+  </div>
+</div>
+"""
+st.markdown(_HERO_HTML, unsafe_allow_html=True)
+
+# ============================================================================
+# Sidebar (shared across tabs)
+# ============================================================================
+st.sidebar.markdown("# WC2026 Picks")
+st.sidebar.caption("Calibrated model, refreshed daily")
+
+# WC_ONLY: the launch product is World-Cup-focused. Loading both the leagues
+# and internationals ML bundles at once blows past Render's 512MB free tier
+# (each is a 3-model gradient-boosting stack). With this flag we load ONLY the
+# internationals model, hide the League/Live-data tab, and restrict the match
+# tab to national teams. Flip to False (or set env WC_ONLY=0) to restore the
+# full multi-scope app on a larger instance. League/Live code is untouched.
+WC_ONLY = os.environ.get("WC_ONLY", "1") != "0"
+
+# Render (and most PaaS) set this. On a hosted box we hide dev-only controls
+# like the in-app retrain button, which would OOM the 512MB instance and write
+# to an ephemeral filesystem anyway. Retraining is the daily GitHub Action's job.
+IS_HOSTED = os.environ.get("RENDER") == "true" or os.environ.get("IS_HOSTED") == "1"
+
+# FREE_MODE: the whole tournament is free for everyone (no paywall). We still
+# capture emails for reminders and offer an optional "support" link. Set env
+# FREE_MODE=0 to switch the £7 paywall back on.
+FREE_MODE = os.environ.get("FREE_MODE", "1") != "0"
+
+available_scopes = []
+for name in ["leagues", "internationals"]:
+    if (ROOT / "models" / f"{name}.joblib").exists():
+        available_scopes.append(name)
+
+if WC_ONLY:
+    available_scopes = [s for s in available_scopes if s == "internationals"]
+
+if not available_scopes:
+    st.error("No trained models found. Run `python train.py` first.")
+    st.stop()
+
+
+@st.cache_resource(show_spinner=False)
+def load_bundle(name: str, mtime: float) -> PredictorBundle:
+    return PredictorBundle.load(name)
+
+
+def get_bundle(name: str) -> PredictorBundle:
+    p = ROOT / "models" / f"{name}.joblib"
+    return load_bundle(name, p.stat().st_mtime)
+
+
+# Show "model updated" timestamps + the universal update button
+for s in available_scopes:
+    p = ROOT / "models" / f"{s}.joblib"
+    st.sidebar.caption(f"{s.title()} model: "
+                       f"{pd.Timestamp(p.stat().st_mtime, unit='s'):%Y-%m-%d %H:%M}")
+
+# Feedback / feature request section
+with st.sidebar.expander("Feedback / feature request"):
+    st.caption("Spot a bug or have an idea? Drop it here.")
+    fb_type = st.selectbox("Type", ["Feature request", "Bug report", "Other"],
+                            key="fb_type")
+    fb_title = st.text_input("Short title", key="fb_title",
+                              placeholder="e.g. Add Champions League")
+    fb_desc = st.text_area("Details", key="fb_desc",
+                            placeholder="Describe the issue or idea...")
+    if st.button("Create on GitHub", key="fb_submit", type="secondary"):
+        if fb_title and fb_desc:
+            from urllib.parse import quote
+            label_map = {
+                "Feature request": "enhancement",
+                "Bug report": "bug",
+                "Other": "feedback",
+            }
+            prefix = {"Feature request": "[Feature] ", "Bug report": "[Bug] ", "Other": ""}[fb_type]
+            url = (
+                "https://github.com/jdgoated1/football-predictor/issues/new"
+                f"?title={quote(prefix + fb_title)}"
+                f"&body={quote(fb_desc)}"
+                f"&labels={label_map[fb_type]}"
+            )
+            st.markdown(f"[**Click here to post on GitHub →**]({url})")
+            st.caption("Pre-fills your text. You'll need a free GitHub account "
+                        "to publish. Or just share the link directly.")
+        else:
+            st.warning("Please fill in both title and details first.")
+    st.caption("Or browse [existing issues](https://github.com/jdgoated1/football-predictor/issues).")
+
+st.sidebar.divider()
+
+# In-app retrain is a LOCAL-DEV convenience only. On the hosted box it would
+# exhaust the 512MB instance and write to an ephemeral filesystem. Hosted
+# deployments are refreshed by the daily GitHub Action (which retrains and
+# commits new models, triggering an auto-deploy).
+if IS_HOSTED:
+    st.sidebar.caption("Models refresh automatically every day.")
+else:
+    if st.sidebar.button("Update now",
+                         help="Re-download latest match data and retrain (~30 sec)"):
+        progress = st.sidebar.empty()
+        progress.info("Updating... please wait")
+        try:
+            result = subprocess.run([sys.executable, "update.py"], cwd=str(ROOT),
+                                    capture_output=True, text=True, timeout=300)
+            if result.returncode == 0:
+                progress.success("Updated. Reloading...")
+                load_bundle.clear()
+                st.rerun()
+            else:
+                progress.error(f"Update failed: {result.stderr[-300:] or result.stdout[-300:]}")
+        except subprocess.TimeoutExpired:
+            progress.error("Update timed out (>5 min)")
+
+st.sidebar.divider()
+
+# ============================================================================
+# Paywall gating
+# ============================================================================
+def _is_unlocked() -> bool:
+    """True if the user has presented a valid HMAC unlock token, or already
+    verified one earlier in this session. No customer email is ever stored."""
+    if FREE_MODE:
+        return True
+    if st.session_state.get("unlocked"):
+        return True
+    token = st.query_params.get("token")
+    if not token:
+        return False
+    try:
+        payload = verify_token(token)
+    except Exception:
+        # e.g. secret misconfigured — fail closed (locked), never crash the page.
+        return False
+    if payload:
+        st.session_state["unlocked"] = True
+        return True
+    return False
+
+
+def _stripe_payment_link() -> str:
+    """Read the Stripe Payment Link from env (Render) or Streamlit secrets
+    (Streamlit Cloud). Returns '#' as a placeholder before Stripe is wired up
+    (so the button still renders the 'opens Monday' notice)."""
+    import os
+    val = os.environ.get("STRIPE_PAYMENT_LINK")
+    if not val:
+        try:
+            val = st.secrets["STRIPE_PAYMENT_LINK"]
+        except Exception:
+            val = None
+    return val or "#"
+
+
+def _app_base_url() -> str:
+    """Base URL for building absolute in-app links (Streamlit's LinkColumn
+    needs absolute URLs). Override with APP_BASE_URL env var for local dev."""
+    return os.environ.get("APP_BASE_URL", "https://wcpicks26.app").rstrip("/")
+
+
+def _current_token() -> str:
+    """The unlock token from the current URL, if any. Navigating to a new URL
+    starts a fresh Streamlit session (session_state is lost), so we must carry
+    the token through every in-app link to keep paid users unlocked."""
+    return st.query_params.get("token", "") or ""
+
+
+def _match_url(home: str, away: str) -> str:
+    """Absolute URL that opens the full analytics for a fixture, preserving the
+    unlock token so paid users stay unlocked after clicking."""
+    tok = _current_token()
+    prefix = f"token={tok}&" if tok else ""
+    return f"{_app_base_url()}/?{prefix}match={home}|{away}"
+
+
+def _home_url() -> str:
+    """Absolute URL back to the main app, preserving the unlock token."""
+    tok = _current_token()
+    return f"{_app_base_url()}/?token={tok}" if tok else f"{_app_base_url()}/"
+
+
+def _resend_key() -> str | None:
+    key = os.environ.get("RESEND_API_KEY")
+    if not key:
+        try:
+            key = st.secrets["RESEND_API_KEY"]
+        except Exception:
+            key = None
+    return key or None
+
+
+def _capture_signup(email: str) -> bool:
+    """Email a free-picks confirmation to a non-buyer who opts in, bcc'ing the
+    operator so their inbox doubles as the list to remind before kickoff.
+    Returns False (handled gracefully) if Resend isn't configured or errors."""
+    key = _resend_key()
+    if not key:
+        return False
+    link = _app_base_url() + "/"
+    html = (
+        '<div style="font-family:system-ui,sans-serif;max-width:520px;margin:0 auto;'
+        'background:#1a2030;color:#f1f5f9;border-radius:14px;padding:28px;">'
+        '<h2 style="color:#3b82f6;margin:0 0 12px;">Your free WC26 picks</h2>'
+        "<p style=\"line-height:1.6;\">Thanks for signing up. The full tournament "
+        "predictions are free this World Cup, every match plus the knockout bracket: "
+        f'<a href="{link}" style="color:#60a5fa;">{link}</a></p>'
+        "<p style=\"line-height:1.6;\">We'll send a reminder before kickoff on 11 June "
+        'and around the big matchdays.</p>'
+        '<p style="font-size:12px;color:#64748b;margin-top:18px;">You\'re getting this '
+        'because you signed up at wcpicks26.app. Not interested? Just ignore this '
+        'email and we won\'t send more.</p></div>'
+    )
+    try:
+        import requests
+        r = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            json={"from": "WC26 Picks <unlock@wcpicks26.app>", "to": email,
+                  "bcc": "support@wcpicks26.app",
+                  "subject": "Your free WC26 World Cup predictions",
+                  "html": html, "reply_to": "support@wcpicks26.app"},
+            timeout=10,
+        )
+        return r.ok
+    except Exception:
+        return False
+
+
+def _render_email_signup(key_prefix: str) -> None:
+    """Reusable email-capture form (free reminders). key_prefix keeps widget
+    keys unique when the form appears in more than one place."""
+    with st.form(f"{key_prefix}_form", clear_on_submit=True):
+        fc1, fc2 = st.columns([3, 1])
+        em = fc1.text_input("Email", placeholder="you@email.com",
+                            label_visibility="collapsed", key=f"{key_prefix}_email")
+        submitted = fc2.form_submit_button("Email me reminders", use_container_width=True)
+        consent = st.checkbox(
+            "Email me a reminder before kickoff and the big matchdays. I've read "
+            "the [Privacy Policy](?page=privacy).", key=f"{key_prefix}_consent")
+        if submitted:
+            if not em or "@" not in em or "." not in em:
+                st.warning("Please enter a valid email address.")
+            elif not consent:
+                st.warning("Please tick the consent box first.")
+            elif _capture_signup(em.strip()):
+                st.success("Done. Check your inbox.")
+            else:
+                st.success("Thanks. We'll be in touch before kickoff.")
+
+
+def _render_free_banner() -> None:
+    """Top-of-tournament banner shown in FREE_MODE: says it's free, captures
+    emails for reminders, and offers an optional support link."""
+    support = _stripe_payment_link()
+    support_html = ""
+    if support and support != "#":
+        support_html = (
+            f' &nbsp;·&nbsp; <a href="{support}" target="_blank" '
+            f'style="color:#f59e0b; text-decoration:none;">Like it? Support the project</a>')
+    st.markdown(
+        f"""
+        <div style="background:linear-gradient(135deg,#11224a 0%,#1a2030 100%);
+                    border:1px solid rgba(245,158,11,0.35); border-radius:14px;
+                    padding:0.9rem 1.2rem; margin-bottom:1rem; text-align:center;">
+          <span style="color:#f59e0b; font-weight:700;">Free for the 2026 World Cup.</span>
+          <span style="color:#cbd5e1;"> Every match, the full knockout bracket, and the
+          simulator, no payment needed.</span>{support_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.expander("Get a reminder before kickoff (optional)", expanded=False):
+        st.caption("We'll email you before the tournament starts and around the big "
+                   "matchdays. No spam.")
+        _render_email_signup("free_signup")
+
+
+# ============================================================================
+# Tabs
+# ============================================================================
+if WC_ONLY:
+    # Only the WC tournament + a national-team match checker. The League/Live
+    # tab is hidden so the leagues ML model never loads (keeps us under 512MB).
+    tab_cup, tab_match = st.tabs(["World Cup bracket", "Quick match check"])
+    tab_more = None
+else:
+    tab_cup, tab_match, tab_more = st.tabs(
+        ["World Cup bracket", "Quick match check", "More"])
+
+
+# ----------------------------------------------------------------------------
+# TAB 1: single match
+# ----------------------------------------------------------------------------
+def render_match():
+    # With a single scope (WC-only launch) the radio is redundant — skip it.
+    if len(available_scopes) == 1:
+        scope = available_scopes[0]
+    else:
+        scope = st.radio("Scope", available_scopes, format_func=str.title,
+                         horizontal=True, key="match_scope")
+    bundle = get_bundle(scope)
+    teams = sorted(bundle.teams)
+
+    # Format team names with flag emojis (for internationals; clubs unchanged)
+    fmt_team = (lambda t: flagged(t)) if scope == "internationals" else (lambda t: t)
+    # Sensible defaults per scope so the page opens on a recognisable matchup.
+    default_home = "England" if scope == "internationals" else "Arsenal"
+    default_away_name = "France" if scope == "internationals" else "Liverpool"
+    c1, c2, c3, c4 = st.columns([3, 3, 2, 2])
+    home = c1.selectbox("Home team", teams,
+                        index=teams.index(default_home) if default_home in teams else 0,
+                        key="m_home", format_func=fmt_team)
+    away_options = [t for t in teams if t != home]
+    default_away = default_away_name if default_away_name in away_options else away_options[0]
+    away = c2.selectbox("Away team", away_options,
+                        index=away_options.index(default_away), key="m_away",
+                        format_func=fmt_team)
+    neutral = c3.checkbox("Neutral venue", value=(scope == "internationals"),
+                          key="m_neutral")
+    blend = c4.slider("Ensemble weight", 0.0, 1.0, 1.0, 0.05, key="m_blend",
+                      help="0 = pure Dixon-Coles, 1 = full stacked ensemble.")
+
+    # Optional: bookmaker odds boost
+    use_odds = st.checkbox("Boost with current bookmaker odds (optional)", key="m_use_odds",
+                           help="When the model has bookmaker odds, RPS drops from ~0.20 to ~0.198 - "
+                                "almost matching the bookmaker baseline.")
+    odds_arg = None
+    if use_odds:
+        oc1, oc2, oc3 = st.columns(3)
+        oh = oc1.number_input("Home odds (decimal)", min_value=1.01, max_value=200.0,
+                              value=2.10, step=0.01, key="m_odds_h")
+        od = oc2.number_input("Draw odds (decimal)", min_value=1.01, max_value=200.0,
+                              value=3.40, step=0.01, key="m_odds_d")
+        oa = oc3.number_input("Away odds (decimal)", min_value=1.01, max_value=200.0,
+                              value=3.50, step=0.01, key="m_odds_a")
+        odds_arg = (oh, od, oa)
+
+    pred = bundle.predict(home, away, neutral=neutral, blend=blend, odds=odds_arg)
+    # For two WC2026 teams, blend in the squad-strength prior so this matches the
+    # tournament view exactly (no-op for non-WC teams). Keeps the same game from
+    # showing two different numbers across the app.
+    wc_applied = False
+    if scope == "internationals":
+        from src.wc26_strength import WC_2026_DATA, apply_wc_prior_to_prediction
+        if home in WC_2026_DATA and away in WC_2026_DATA:
+            pred = apply_wc_prior_to_prediction(pred, home, away, blend=0.30)
+            wc_applied = True
+    home_disp = fmt_team(home)
+    away_disp = fmt_team(away)
+    if wc_applied:
+        st.caption("Both teams are at the 2026 World Cup, so this blends in the "
+                   "squad-strength prior and matches the tournament view.")
+
+    # Show club crests for leagues scope when logos are available
+    if scope == "leagues" and has_logos():
+        crest_cols = st.columns([1, 4, 1])
+        h_logo = club_logo(home)
+        a_logo = club_logo(away)
+        with crest_cols[0]:
+            if h_logo:
+                st.image(h_logo, width=80)
+        with crest_cols[1]:
+            st.markdown(f"<h3 style='text-align:center;margin-top:1.5rem'>"
+                        f"{home_disp}  vs  {away_disp}</h3>",
+                        unsafe_allow_html=True)
+        with crest_cols[2]:
+            if a_logo:
+                st.image(a_logo, width=80)
+    else:
+        st.markdown(f"### {home_disp}  vs  {away_disp}")
+    hg, ag = pred["most_likely"]
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric(f"{home_disp} win", f"{pred['outcome']['H']*100:.1f}%")
+    k2.metric("Draw",        f"{pred['outcome']['D']*100:.1f}%")
+    k3.metric(f"{away_disp} win", f"{pred['outcome']['A']*100:.1f}%")
+    k4.metric("Predicted score", f"{hg} - {ag}")
+    k5.metric("Expected goals", f"{pred['lambda_home']:.2f} - {pred['lambda_away']:.2f}")
+
+    st.divider()
+
+    col_bar, col_top = st.columns([1, 1])
+    with col_bar:
+        st.subheader("Outcome probabilities")
+        rows = [{"Result": f"{home} win", "Probability": pred["outcome"]["H"], "Model": "Ensemble"},
+                {"Result": "Draw",        "Probability": pred["outcome"]["D"], "Model": "Ensemble"},
+                {"Result": f"{away} win", "Probability": pred["outcome"]["A"], "Model": "Ensemble"}]
+        if pred["xgb_outcome"] is not None:
+            for k, v in [("H", f"{home} win"), ("D", "Draw"), ("A", f"{away} win")]:
+                rows.append({"Result": v, "Probability": pred["dc_outcome"][k], "Model": "Dixon-Coles"})
+                rows.append({"Result": v, "Probability": pred["xgb_outcome"][k], "Model": "XGBoost"})
+        odf = pd.DataFrame(rows)
+        fig = px.bar(odf, x="Result", y="Probability", color="Model", barmode="group",
+                     text=odf["Probability"].map(lambda v: f"{v*100:.1f}%"))
+        fig.update_layout(yaxis_tickformat=".0%", height=380)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col_top:
+        st.subheader("Most likely scorelines")
+        top_df = pd.DataFrame([
+            {"Score": f"{h}-{a}", "p": p, "Probability": f"{p*100:.1f}%"}
+            for (h, a, p) in pred["top_scores"]
+        ])
+        fig2 = px.bar(top_df, x="Score", y="p", text="Probability", color="p",
+                      color_continuous_scale="Blues")
+        fig2.update_layout(yaxis_tickformat=".0%", yaxis_title="Probability",
+                           height=380, showlegend=False, coloraxis_showscale=False)
+        st.plotly_chart(fig2, use_container_width=True)
+
+    st.subheader("Full scoreline distribution")
+    sm = pred["score_matrix"]
+    n = min(7, sm.shape[0])
+    heat = sm[:n, :n]
+    hm = go.Figure(data=go.Heatmap(
+        z=heat * 100,
+        x=[str(i) for i in range(n)], y=[str(i) for i in range(n)],
+        text=[[f"{heat[i, j]*100:.1f}%" for j in range(n)] for i in range(n)],
+        texttemplate="%{text}", colorscale="Blues", colorbar=dict(title="%"),
+    ))
+    hm.update_layout(xaxis_title=f"{away} goals", yaxis_title=f"{home} goals",
+                     yaxis_autorange="reversed", height=480)
+    st.plotly_chart(hm, use_container_width=True)
+
+
+# ----------------------------------------------------------------------------
+# TAB 2: League season
+# ----------------------------------------------------------------------------
+LEAGUE_BADGES = {
+    "Premier League": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+    "La Liga":        "🇪🇸",
+    "Bundesliga":     "🇩🇪",
+    "Serie A":        "🇮🇹",
+    "Ligue 1":        "🇫🇷",
+}
+
+
+def _render_one_league(bundle, league: str, key_prefix: str) -> None:
+    """Render the full league simulator for one league. Called per tab."""
+    state = current_state_for(league)
+    if state is None or not state.teams:
+        st.error(f"No data found for {league}.")
+        return
+
+    c1, c2 = st.columns([2, 2])
+    continue_season = c1.toggle("Continue from current standings", value=True,
+                                key=f"{key_prefix}_continue",
+                                help="If on, only the remaining fixtures are simulated.")
+    n_sims = c2.number_input("Simulations", min_value=200, max_value=20000, value=3000,
+                             step=500, key=f"{key_prefix}_nsims")
+
+    if continue_season:
+        played = len(state.played_pairs)
+        total = len(state.teams) * (len(state.teams) - 1)
+        st.caption(f"{len(state.teams)} teams. {played}/{total} fixtures played. "
+                   f"Simulating the remaining {total - played}.")
+    else:
+        st.caption(f"{len(state.teams)} teams. Simulating a full "
+                   f"{len(state.teams)*(len(state.teams)-1)} match season from scratch.")
+
+    use_logos = has_logos()
+
+    if continue_season:
+        with st.expander("Current standings (real)", expanded=False):
+            cur_rows = []
+            for t in sorted(state.teams,
+                             key=lambda x: (-state.pts[x],
+                                            -(state.gf[x] - state.ga[x]),
+                                            -state.gf[x])):
+                row = {}
+                if use_logos:
+                    row[" "] = club_logo(t) or ""
+                row.update({"Team": t, "Pts": state.pts[t], "GF": state.gf[t],
+                            "GA": state.ga[t], "GD": state.gf[t] - state.ga[t]})
+                cur_rows.append(row)
+            cur = pd.DataFrame(cur_rows)
+            cur.index = range(1, len(cur) + 1)
+            cfg = {" ": st.column_config.ImageColumn("", width="small")} if use_logos else None
+            st.dataframe(cur, use_container_width=True, column_config=cfg)
+
+    if st.button("Run season simulation", key=f"{key_prefix}_run", type="primary"):
+        with st.spinner(f"Running {n_sims:,} simulations..."):
+            result = simulate_league(bundle, state.teams, n_sims=int(n_sims),
+                                     start=state if continue_season else None)
+        st.success(f"Done - {n_sims:,} seasons simulated.")
+        st.subheader("Predicted final table")
+        styled = result.copy()
+        for col in ["Win %", "Top 4 %", "Top 6 %", "Bottom 3 %"]:
+            styled[col] = styled[col].map(lambda v: f"{v:.1f}%")
+        styled["Expected pts"] = styled["Expected pts"].map(lambda v: f"{v:.1f}")
+        styled["Expected pos"] = styled["Expected pos"].map(lambda v: f"{v:.1f}")
+        if use_logos:
+            styled.insert(0, " ", styled["Team"].map(lambda t: club_logo(t) or ""))
+        cfg = {" ": st.column_config.ImageColumn("", width="small")} if use_logos else None
+        st.dataframe(styled, use_container_width=True, hide_index=True,
+                     column_config=cfg)
+
+        cA, cB = st.columns(2)
+        with cA:
+            st.subheader("Title race")
+            top = result.nlargest(8, "Win %")
+            fig = px.bar(top, x="Team", y="Win %", text=top["Win %"].map(lambda v: f"{v:.1f}%"),
+                         color="Win %", color_continuous_scale="Greens")
+            fig.update_layout(height=380, coloraxis_showscale=False)
+            st.plotly_chart(fig, use_container_width=True)
+        with cB:
+            st.subheader("Relegation candidates")
+            bot = result.nlargest(8, "Bottom 3 %")
+            fig = px.bar(bot, x="Team", y="Bottom 3 %",
+                         text=bot["Bottom 3 %"].map(lambda v: f"{v:.1f}%"),
+                         color="Bottom 3 %", color_continuous_scale="Reds")
+            fig.update_layout(height=380, coloraxis_showscale=False)
+            st.plotly_chart(fig, use_container_width=True)
+
+
+def render_league():
+    if "leagues" not in available_scopes:
+        st.warning("League model not available. Train it first.")
+        return
+    bundle = get_bundle("leagues")
+
+    leagues = list(LEAGUE_BADGES.keys())
+    tab_labels = [f"{LEAGUE_BADGES[lg]}  {lg}" for lg in leagues]
+    league_tabs = st.tabs(tab_labels)
+    for tab, lg in zip(league_tabs, leagues):
+        with tab:
+            _render_one_league(bundle, lg, key_prefix=f"l_{lg.replace(' ', '_').lower()}")
+
+
+# ----------------------------------------------------------------------------
+# TAB 3: Tournament (group + knockout)
+# ----------------------------------------------------------------------------
+def _snake_seed(teams_ranked: list[str], n_groups: int) -> list[list[str]]:
+    """Pot-based snake draft so each group has one strong, one medium, etc."""
+    groups: list[list[str]] = [[] for _ in range(n_groups)]
+    for i, t in enumerate(teams_ranked):
+        pot = i // n_groups
+        slot = i % n_groups
+        if pot % 2 == 1:
+            slot = n_groups - 1 - slot
+        groups[slot].append(t)
+    return groups
+
+
+# ----------------------------------------------------------------------------
+# Tournament visualisation helpers
+# ----------------------------------------------------------------------------
+import html as _html
+
+
+def _team_label(team: str, height: int = 12) -> str:
+    """Short team label with a leading flag IMG (works on Linux servers).
+
+    Falls back to plain name when no flag mapping exists. Uses flagcdn PNGs
+    rather than Unicode emojis because Streamlit Cloud's Linux fonts don't
+    render regional-indicator pairs as flag glyphs."""
+    from src.flags import flag_img_html
+    from src.wc26_strength import WC_2026_DATA
+    img = flag_img_html(team, height=height)
+    name = _html.escape(team)
+    data = WC_2026_DATA.get(team)
+    if data:
+        bits = []
+        if data.get("rank") is not None:
+            bits.append(f"squad rank #{data['rank']}")
+        if data.get("odds") is not None:
+            bits.append(f"{data['odds']:g} to win outright")
+        if data.get("value_m") is not None:
+            bits.append(f"€{data['value_m']}m squad value")
+        if bits:
+            tip = _html.escape(f"{team} · " + " · ".join(bits))
+            return f'<span class="team-hc" title="{tip}">{img}{name}</span>'
+    return f"{img}{name}"
+
+
+def _team_hover_title(team: str) -> str:
+    """Full name + squad rank/odds, for a native hover tooltip on compact codes."""
+    from src.wc26_strength import WC_2026_DATA
+    data = WC_2026_DATA.get(team) or {}
+    bits = []
+    if data.get("rank") is not None:
+        bits.append(f"squad rank #{data['rank']}")
+    if data.get("odds") is not None:
+        bits.append(f"{data['odds']:g} to win outright")
+    suffix = (" · " + " · ".join(bits)) if bits else ""
+    return _html.escape(f"{team}{suffix}")
+
+
+def _team_code_label(team: str, height: int = 14) -> str:
+    """Compact flag + FIFA 3-letter code (e.g. 🇲🇽 MEX) for narrow group/bracket
+    cards where full names would truncate. Full name shows on hover."""
+    from src.flags import flag_img_html, team_code
+    img = flag_img_html(team, height=height)
+    code = _html.escape(team_code(team))
+    return (f'<span class="team-hc" title="{_team_hover_title(team)}">'
+            f'{img}<span class="tc">{code}</span></span>')
+
+
+def _stats_from_fixtures(group_teams: list[str],
+                          group_fixtures: list[dict]) -> dict[str, dict]:
+    """Recover P/W/D/L/GF/GA from the predicted fixture list for one group."""
+    stats = {t: {"P": 0, "W": 0, "D": 0, "L": 0, "GF": 0, "GA": 0} for t in group_teams}
+    for f in group_fixtures:
+        h, a = f["home"], f["away"]
+        hg, ag = f["score"]
+        if h not in stats or a not in stats:
+            continue
+        stats[h]["P"] += 1; stats[a]["P"] += 1
+        stats[h]["GF"] += hg; stats[h]["GA"] += ag
+        stats[a]["GF"] += ag; stats[a]["GA"] += hg
+        if hg > ag:
+            stats[h]["W"] += 1; stats[a]["L"] += 1
+        elif hg < ag:
+            stats[a]["W"] += 1; stats[h]["L"] += 1
+        else:
+            stats[h]["D"] += 1; stats[a]["D"] += 1
+    return stats
+
+
+def _render_group_cards(fixtures: list[dict], standings: list[list[tuple]],
+                         groups: list[list[str]], fmt) -> None:
+    """Render each group as a styled card with standings + fixtures.
+
+    Grid: 3 columns when there are 6+ groups, 4 when 4, else 2.
+    """
+    n_groups = len(groups)
+
+    # Best-3rds qualifiers (highlighted yellow) if format uses them
+    best_thirds_set: set[str] = set()
+    if fmt.best_thirds > 0:
+        thirds = []
+        for ranked in standings:
+            if len(ranked) > fmt.advance_per_group:
+                team, st_dict = ranked[fmt.advance_per_group]
+                thirds.append((team, st_dict))
+        thirds.sort(key=lambda kv: (-kv[1]["pts"], -kv[1]["gd"], -kv[1]["gf"]))
+        best_thirds_set = {t for t, _ in thirds[:fmt.best_thirds]}
+
+    def card_html(gi: int) -> str:
+        letter = chr(ord("A") + gi)
+        stats = _stats_from_fixtures(groups[gi], [f for f in fixtures if f["group_idx"] == gi])
+        # Standings table rows
+        rows_html = []
+        for pos, (team, sd) in enumerate(standings[gi], start=1):
+            s = stats[team]
+            row_class = ""
+            if pos <= fmt.advance_per_group:
+                row_class = "adv-q"
+            elif team in best_thirds_set:
+                row_class = "adv-t"
+            rows_html.append(
+                f'<tr class="{row_class}">'
+                f'<td class="pos-cell">{pos}</td>'
+                f'<td class="team-cell">{_team_code_label(team)}</td>'
+                f'<td class="num">{s["P"]}</td>'
+                f'<td class="gd-col">{(sd["gd"]):+d}</td>'
+                f'<td class="pts-cell pts-col">{sd["pts"]}</td>'
+                f'</tr>'
+            )
+        # Fixtures list (sorted by date if available, else by matchday)
+        gfx = sorted(
+            [f for f in fixtures if f["group_idx"] == gi],
+            key=lambda f: (f.get("date") or "", f.get("matchday", 0)),
+        )
+        fx_html = []
+        for f in gfx:
+            played = f.get("is_actual", False)
+            date_label = ""
+            if f.get("date"):
+                date_label = pd.Timestamp(f["date"]).strftime("%d %b")
+            elif "matchday" in f:
+                date_label = f"MD{f['matchday']}"
+            sc = f"{f['score'][0]}–{f['score'][1]}"
+            url = _match_url(f["home"], f["away"])
+            fx_html.append(
+                f'<a class="fx-link" href="{url}" title="Analyse this match">'
+                f'<div class="fx{" played" if played else ""}">'
+                f'<span class="fx-date">{date_label}</span>'
+                f'<span class="fx-home">{_team_code_label(f["home"])}</span>'
+                f'<span class="fx-score">{sc}</span>'
+                f'<span class="fx-away">{_team_code_label(f["away"])}</span>'
+                f'<span class="fx-go">›</span>'
+                f'</div></a>'
+            )
+        return (
+            f'<div class="group-card">'
+            f'<div class="gc-header"><span class="gc-letter">GROUP {letter}</span></div>'
+            f'<table class="gc-table">'
+            f'<thead><tr><th class="pos-cell"></th><th class="team-th">Team</th>'
+            f'<th class="num">Pld</th>'
+            f'<th class="gd-col">GD</th><th class="pts-col">Pts</th>'
+            f'</tr></thead><tbody>{"".join(rows_html)}</tbody></table>'
+            f'<div class="gc-fixtures-label">Predicted results '
+            f'<span style="opacity:0.6">(tap to analyse)</span></div>'
+            f'<div class="gc-fixtures">{"".join(fx_html)}</div>'
+            f'</div>'
+        )
+
+    # One responsive CSS grid: the browser auto-wraps cards to fit the screen
+    # (1 column on a phone, 2-3 on tablet, 3-4 on desktop). Far better on mobile
+    # than fixed st.columns, which just squeeze side-by-side.
+    all_cards = "".join(card_html(gi) for gi in range(n_groups))
+    st.markdown(f'<div class="gc-grid">{all_cards}</div>', unsafe_allow_html=True)
+
+    # Legend
+    legend_parts = []
+    legend_parts.append('<span style="color:#3b82f6">▌</span> Advances')
+    if fmt.best_thirds > 0:
+        legend_parts.append('<span style="color:#f59e0b">▌</span> Best 3rd-place')
+    st.markdown(
+        f'<div style="color:#94a3b8;font-size:0.78rem;margin-top:0.2rem">'
+        f'{" &nbsp; ".join(legend_parts)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_bracket(rounds: list[list[dict]], champion: str | None) -> None:
+    """Render the knockout rounds as a horizontal bracket of match cards."""
+    if not rounds:
+        return
+    round_cols_html = []
+    for round_matches in rounds:
+        round_name = round_matches[0]["round"]
+        date_label = ""
+        if round_matches[0].get("date"):
+            date_label = f' · {pd.Timestamp(round_matches[0]["date"]).strftime("%d %b")}'
+        match_html = []
+        for m in round_matches:
+            hg, ag = m["score"]
+            winner = m["winner"]
+            played = m.get("is_actual", False)
+            pens = m.get("pens", False)
+            home_class = "winner" if winner == m["home"] else "loser"
+            away_class = "winner" if winner == m["away"] else "loser"
+            classes = ["bracket-match"]
+            if played: classes.append("played")
+            if pens:   classes.append("pens")
+            # Always render a single-line meta so every card is the SAME height —
+            # uneven heights break the bracket's vertical nesting.
+            from src.flags import team_code as _tc
+            if pens:
+                meta = f'<div class="bm-meta">pens → {_html.escape(_tc(winner))}</div>'
+            elif played:
+                meta = '<div class="bm-meta">✓ played</div>'
+            else:
+                meta = '<div class="bm-meta">&nbsp;</div>'
+            url = _match_url(m["home"], m["away"])
+            match_html.append(
+                f'<a class="bm-link" href="{url}" title="Analyse this match">'
+                f'<div class="{" ".join(classes)}">'
+                f'<div class="bm-side {home_class}">'
+                f'<span class="team">{_team_code_label(m["home"])}</span>'
+                f'<span class="gs">{hg}</span></div>'
+                f'<div class="bm-side {away_class}">'
+                f'<span class="team">{_team_code_label(m["away"])}</span>'
+                f'<span class="gs">{ag}</span></div>'
+                f'{meta}'
+                f'</div></a>'
+            )
+        round_cols_html.append(
+            f'<div class="bracket-round">'
+            f'<div class="bracket-round-title">{_html.escape(round_name)}{date_label}</div>'
+            f'{"".join(match_html)}'
+            f'</div>'
+        )
+    st.markdown(
+        f'<div class="bracket-wrap">{"".join(round_cols_html)}</div>',
+        unsafe_allow_html=True,
+    )
+    if champion:
+        st.markdown(
+            f'<div class="bracket-champion">'
+            f'<div class="ch-label">🏆 Most-likely path winner</div>'
+            f'<div class="ch-team">{_team_label(champion)}</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "This bracket follows one path: the favourite's most-likely result in "
+            "every match. A single path can't show upsets, so the winner here "
+            "won't always be the team most likely to lift the trophy overall. "
+            "For true title odds, run the simulation at the bottom of the page."
+        )
+
+
+def _render_paywall_teaser():
+    """Free-tier teaser shown when the user hasn't unlocked the tournament.
+
+    Shows: the pitch, 3 featured Matchday-1 predictions, the full MD1 table
+    as a dataframe, and a locked-bracket notice + Stripe CTA. Designed to
+    prove the model is real without giving away the WC-pool-winning content.
+    """
+    from src.schedules import WC_2026_GROUP_FIXTURES
+    from src.real_groups import ALIASES
+    from src.tournament import best_ev_score
+    from src.wc26_strength import apply_wc_prior_to_prediction
+
+    # Post-purchase: Stripe sends buyers back here with ?session_id=... but the
+    # unlock token arrives by email (from the Worker). Reassure them so they don't
+    # think the purchase failed when they still see the paywall.
+    if st.query_params.get("session_id"):
+        st.success(
+            "**Thanks for your purchase.** Your unlock link is on its way to your "
+            "email and usually arrives within a minute (check spam if it doesn't). "
+            "Click the link in that email to open the full tournament, then you can "
+            "close this tab."
+        )
+        st.caption(
+            "Still nothing after a few minutes? Email support@wcpicks26.app and "
+            "we'll sort it out."
+        )
+        st.divider()
+
+    bundle = get_bundle("internationals")
+    known = set(bundle.teams)
+
+    # First 24 entries of WC_2026_GROUP_FIXTURES = Matchday 1
+    md1_raw = WC_2026_GROUP_FIXTURES[:24]
+    md1 = [(date, ALIASES.get(h, h), ALIASES.get(a, a))
+           for (date, h, a) in md1_raw
+           if ALIASES.get(h, h) in known and ALIASES.get(a, a) in known]
+
+    # ---- How it works (3 steps) ----
+    st.markdown(
+        """
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+                    gap:0.8rem; margin:0.4rem 0 1.4rem;">
+          <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07);
+                      border-radius:12px; padding:1rem 1.1rem;">
+            <div style="color:#3b82f6; font-weight:800; font-size:1.3rem;">1</div>
+            <div style="color:#f1f5f9; font-weight:700; margin:0.2rem 0 0.2rem;">We predict every match</div>
+            <div style="color:#94a3b8; font-size:0.85rem; line-height:1.4;">
+              A calibrated model gives the most likely scoreline for all 104 games.</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07);
+                      border-radius:12px; padding:1rem 1.1rem;">
+            <div style="color:#e11d48; font-weight:800; font-size:1.3rem;">2</div>
+            <div style="color:#f1f5f9; font-weight:700; margin:0.2rem 0 0.2rem;">Set to your pool's rules</div>
+            <div style="color:#94a3b8; font-size:0.85rem; line-height:1.4;">
+              Tell it how your sweepstake scores points. Every pick re-optimises to suit.</div>
+          </div>
+          <div style="background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07);
+                      border-radius:12px; padding:1rem 1.1rem;">
+            <div style="color:#f59e0b; font-weight:800; font-size:1.3rem;">3</div>
+            <div style="color:#f1f5f9; font-weight:700; margin:0.2rem 0 0.2rem;">You make smarter picks</div>
+            <div style="color:#94a3b8; font-size:0.85rem; line-height:1.4;">
+              Copy them into your office or family pool and stop guessing.</div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ---- USP demo: same match, different pool rules, different pick ----
+    from src.tournament import best_ev_score as _bev
+    demo_h, demo_a = "England", "Croatia"
+    if demo_h in known and demo_a in known:
+        dp = bundle.predict(demo_h, demo_a, neutral=True)
+        dp = apply_wc_prior_to_prediction(dp, demo_h, demo_a, blend=0.30)
+        demo = [
+            ("3 pts exact, 1 pt result", dict(exact_pts=3, result_pts=1, gd_pts=0, draw_bonus=0.15)),
+            ("Bonus for goal difference", dict(exact_pts=3, result_pts=1, gd_pts=2, draw_bonus=0.15)),
+            ("Draw-friendly pool", dict(exact_pts=3, result_pts=1, gd_pts=0, draw_bonus=0.5)),
+        ]
+        demo_rows = ""
+        for label, sc in demo:
+            hg, ag, _, _ = _bev(dp, **sc)
+            demo_rows += (
+                f'<tr><td style="padding:7px 10px; color:#cbd5e1;">{label}</td>'
+                f'<td style="padding:7px 10px; text-align:right; font-family:JetBrains Mono,monospace;'
+                f'font-weight:700; color:#f8fafc;">{hg}–{ag}</td></tr>'
+            )
+        st.markdown(
+            f"""
+            <div style="background:linear-gradient(135deg,#11224a 0%,#1a2030 100%);
+                        border:1px solid rgba(37,99,235,0.3); border-radius:14px;
+                        padding:1.1rem 1.3rem; margin-bottom:1.4rem;">
+              <div style="color:#f8fafc; font-weight:700; margin-bottom:0.2rem;">
+                Why "your pool's rules" matters</div>
+              <div style="color:#94a3b8; font-size:0.85rem; margin-bottom:0.7rem;">
+                The smartest pick for the <b>same match</b> changes with how your pool scores.
+                Here's {_team_code_label(demo_h)} vs {_team_code_label(demo_a)}:</div>
+              <table style="width:100%; border-collapse:collapse; font-size:0.88rem;">
+                <thead><tr>
+                  <th style="text-align:left; padding:6px 10px; color:#64748b; font-size:0.72rem;
+                      text-transform:uppercase; letter-spacing:0.04em;">Your pool's scoring</th>
+                  <th style="text-align:right; padding:6px 10px; color:#64748b; font-size:0.72rem;
+                      text-transform:uppercase; letter-spacing:0.04em;">Our pick</th>
+                </tr></thead>
+                <tbody>{demo_rows}</tbody>
+              </table>
+              <div style="color:#64748b; font-size:0.78rem; margin-top:0.6rem;">
+                The full version does this for all 104 matches, set to your exact rules.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    st.caption("Below: every Matchday 1 fixture. Click any row to open its full "
+               "breakdown. The full tournament unlock is **£7**.")
+
+    # Three featured matches — full match cards
+    from src.flags import flag_img_html
+    featured_pairs = [
+        ("England", "Croatia"),
+        ("Brazil", "Morocco"),
+        ("Spain", "Cape Verde"),
+    ]
+    featured = [(h, a) for (h, a) in featured_pairs if h in known and a in known]
+    if featured:
+        st.markdown("#### Featured Matchday 1 picks")
+        cols = st.columns(len(featured))
+        for col, (h, a) in zip(cols, featured):
+            pred = bundle.predict(h, a, neutral=True)
+            pred = apply_wc_prior_to_prediction(pred, h, a, blend=0.30)
+            hg, ag, _, _ = best_ev_score(pred)
+            with col:
+                st.markdown(
+                    f"{flag_img_html(h, 16)} <b>{_html.escape(h)}</b> "
+                    f"<span style='opacity:0.6'>vs</span> "
+                    f"{flag_img_html(a, 16)} <b>{_html.escape(a)}</b>",
+                    unsafe_allow_html=True)
+                k1, k2 = st.columns(2)
+                k1.metric("Predicted", f"{hg}–{ag}")
+                k2.metric(f"{h[:6]} win", f"{pred['outcome']['H']*100:.0f}%")
+                st.caption(
+                    f"D {pred['outcome']['D']*100:.0f}% · "
+                    f"{a[:6]} {pred['outcome']['A']*100:.0f}% · "
+                    f"xG {pred['lambda_home']:.1f}–{pred['lambda_away']:.1f}"
+                )
+
+    # Full MD1 table — each row links to its full analytics (free for MD1)
+    st.markdown("#### All 24 Matchday 1 fixtures")
+    st.caption("Click the Analyse link on any row to open its full breakdown: "
+               "win probabilities, the likeliest scorelines, and a heatmap.")
+    rows = []
+    for (date, h, a) in md1:
+        pred = bundle.predict(h, a, neutral=True)
+        pred = apply_wc_prior_to_prediction(pred, h, a, blend=0.30)
+        hg, ag, _, _ = best_ev_score(pred)
+        rows.append({
+            "Date":   pd.Timestamp(date).strftime("%d %b"),
+            "Home":   flagged(h),
+            "Pick":   f"{hg}–{ag}",
+            "Away":   flagged(a),
+            "H %":    f"{pred['outcome']['H']*100:.0f}%",
+            "D %":    f"{pred['outcome']['D']*100:.0f}%",
+            "A %":    f"{pred['outcome']['A']*100:.0f}%",
+            "Analyse": _match_url(h, a),
+        })
+    st.dataframe(
+        pd.DataFrame(rows), hide_index=True, use_container_width=True,
+        column_config={
+            "Analyse": st.column_config.LinkColumn(
+                "Analyse", display_text="Analyse", width="small")
+        },
+    )
+
+    # Locked content notice + Stripe CTA
+    st.divider()
+    st.markdown(
+        """
+        <div style="background:linear-gradient(135deg,#11224a 0%, #3a1020 100%);
+                    border:1px solid rgba(37,99,235,0.35); border-radius:16px;
+                    padding:1.8rem 2rem; text-align:center; margin: 1rem 0;">
+          <div style="font-size:0.85rem; color:#f59e0b; letter-spacing:0.1em;
+                      text-transform:uppercase; font-weight:700;">Locked</div>
+          <h3 style="margin:0.5rem 0 0.8rem; color:#f8fafc;">
+            Matchdays 2 and 3, the knockout bracket, and the predicted champion
+          </h3>
+          <p style="color:#cbd5e1; margin:0 0 1.3rem; line-height:1.6;">
+            The full unlock adds the other 80 group fixtures and the whole
+            knockout bracket through to the Final. You also get each team's
+            chances of winning the cup, score picks set to your pool's own
+            scoring, and predictions that refresh every day of the tournament.
+          </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    pay_link = _stripe_payment_link()
+    cta_disabled = pay_link == "#"
+    cols = st.columns([1, 2, 1])
+    with cols[1]:
+        if cta_disabled:
+            st.info(
+                "Checkout opens Monday June 1. Bookmark this page so you can "
+                "come back to it."
+            )
+        else:
+            st.markdown(
+                f'<a href="{pay_link}" target="_blank" style="text-decoration:none;">'
+                f'<div style="background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%);'
+                f'color:white; padding:1rem 2rem; border-radius:12px; font-weight:700;'
+                f'font-size:1.15rem; text-align:center; cursor:pointer;'
+                f'box-shadow:0 6px 18px rgba(37,99,235,0.4);">'
+                f'Unlock the full tournament · £7'
+                f'</div></a>',
+                unsafe_allow_html=True,
+            )
+        st.caption(
+            "Refunds before kickoff (Jun 11). One-time payment, no subscription. "
+            "Powered by Stripe."
+        )
+
+    # ---- Email capture for people not ready to buy ----
+    st.divider()
+    st.markdown("#### Not ready to buy?")
+    st.caption("Get the free Matchday 1 picks emailed to you, plus one reminder "
+               "before the tournament starts.")
+    _render_email_signup("teaser_signup")
+
+
+def _free_md1_pairs() -> set[tuple[str, str]]:
+    """The 24 Matchday-1 (home, away) pairs that are free to analyse without
+    unlocking. Mirrors the teaser's free preview set."""
+    from src.schedules import WC_2026_GROUP_FIXTURES
+    from src.real_groups import ALIASES
+    out = set()
+    for date, h, a in WC_2026_GROUP_FIXTURES[:24]:
+        out.add((ALIASES.get(h, h), ALIASES.get(a, a)))
+    return out
+
+
+def _render_match_detail(home: str, away: str, wc_blend: float = 0.30) -> None:
+    """Full single-match analytics for a WC fixture: outcome probabilities,
+    most-likely scorelines, and the scoreline heatmap. Reached by clicking a
+    fixture (?match=Home|Away). Neutral venue + WC squad-strength prior, to
+    match how the tournament predictions are generated."""
+    from src.tournament import best_ev_score
+    from src.wc26_strength import apply_wc_prior_to_prediction
+
+    bundle = get_bundle("internationals")
+    known = set(bundle.teams)
+    back_url = _home_url()
+    if home not in known or away not in known:
+        st.error(f"Unknown match: {home} vs {away}.")
+        st.markdown(f"[← Back to the tournament]({back_url})")
+        return
+
+    st.markdown(f"[← Back to the tournament]({back_url})")
+    pred = bundle.predict(home, away, neutral=True)
+    pred = apply_wc_prior_to_prediction(pred, home, away, blend=wc_blend)
+    hg, ag, _, _ = best_ev_score(pred)
+
+    from src.flags import flag_img_html
+    st.markdown(
+        f"<h2>{flag_img_html(home, 26)} {_html.escape(home)} "
+        f"<span style='opacity:0.5;font-weight:500'>vs</span> "
+        f"{flag_img_html(away, 26)} {_html.escape(away)}</h2>",
+        unsafe_allow_html=True)
+    st.caption("Played at a neutral venue, with the squad-strength prior "
+               "blended in. 2026 World Cup group stage.")
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric(f"{home} win", f"{pred['outcome']['H']*100:.1f}%")
+    k2.metric("Draw", f"{pred['outcome']['D']*100:.1f}%")
+    k3.metric(f"{away} win", f"{pred['outcome']['A']*100:.1f}%")
+    k4.metric("Smartest score pick", f"{hg} – {ag}")
+    k5.metric("Expected goals", f"{pred['lambda_home']:.2f} – {pred['lambda_away']:.2f}")
+
+    st.divider()
+    col_bar, col_top = st.columns(2)
+    with col_bar:
+        st.subheader("Outcome probabilities")
+        ph, pd_, pa = pred["outcome"]["H"], pred["outcome"]["D"], pred["outcome"]["A"]
+        bars = [
+            ("h", f"{home} win", ph),
+            ("d", "Draw", pd_),
+            ("a", f"{away} win", pa),
+        ]
+        rows_html = "".join(
+            f'<div class="prob-row">'
+            f'<div class="prob-label">{_html.escape(lbl)}</div>'
+            f'<div class="prob-track"><div class="prob-fill {cls}" '
+            f'style="--pct:{p*100:.1f}%">{p*100:.0f}%</div></div>'
+            f'</div>'
+            for cls, lbl, p in bars
+        )
+        st.markdown(f'<div class="prob-wrap">{rows_html}</div>',
+                    unsafe_allow_html=True)
+    with col_top:
+        st.subheader("Most likely scorelines")
+        top_df = pd.DataFrame([
+            {"Score": f"{h}-{a}", "p": p, "Probability": f"{p*100:.1f}%"}
+            for (h, a, p) in pred["top_scores"]
+        ])
+        fig2 = px.bar(top_df, x="Score", y="p", text="Probability", color="p",
+                      color_continuous_scale="Blues")
+        fig2.update_layout(yaxis_tickformat=".0%", yaxis_title="Probability",
+                           height=360, showlegend=False, coloraxis_showscale=False)
+        st.plotly_chart(fig2, use_container_width=True)
+
+    st.subheader("Full scoreline distribution")
+    sm = pred["score_matrix"]
+    n = min(7, sm.shape[0])
+    heat = sm[:n, :n]
+    hm = go.Figure(data=go.Heatmap(
+        z=heat * 100,
+        x=[str(i) for i in range(n)], y=[str(i) for i in range(n)],
+        text=[[f"{heat[i, j]*100:.1f}%" for j in range(n)] for i in range(n)],
+        texttemplate="%{text}", colorscale="Greens", colorbar=dict(title="%"),
+    ))
+    hm.update_layout(xaxis_title=f"{away} goals", yaxis_title=f"{home} goals",
+                     yaxis_autorange="reversed", height=460)
+    st.plotly_chart(hm, use_container_width=True)
+    st.markdown(f"[← Back to the tournament]({back_url})")
+
+
+def render_tournament():
+    if "internationals" not in available_scopes:
+        st.warning("Internationals model not available.")
+        return
+
+    unlocked = _is_unlocked()
+
+    # Clicking a fixture sets ?match=Home|Away. Free users can drill into the 24
+    # Matchday-1 games; paid users into any fixture. Anything else → paywall.
+    match_param = st.query_params.get("match")
+    if match_param and "|" in match_param:
+        home, away = (s.strip() for s in match_param.split("|", 1))
+        if unlocked or (home, away) in _free_md1_pairs():
+            _render_match_detail(home, away)
+            return
+        _render_paywall_teaser()
+        return
+
+    if not unlocked:
+        _render_paywall_teaser()
+        return
+
+    if FREE_MODE:
+        _render_free_banner()
+
+    bundle = get_bundle("internationals")
+    all_teams = sorted(bundle.teams)
+
+    c1, c2, c3 = st.columns([3, 3, 2])
+    fmt_name = c1.selectbox("Format", list(FORMATS.keys()), key="t_format")
+    fmt = FORMATS[fmt_name]
+
+    # Show "Real" as the default option whenever we have an official draw on file
+    has_real = fmt_name in REAL_GROUPS
+    draw_options = (["Real (official draw)", "Snake (balanced)", "Random"]
+                    if has_real else ["Snake (balanced)", "Random"])
+    seed_mode = c2.radio("Group draw", draw_options, horizontal=True, key="t_seed")
+    n_sims = c3.number_input("Simulations", min_value=200, max_value=20000, value=3000,
+                             step=500, key="t_nsims")
+
+    st.caption(f"{fmt.n_groups} groups of {fmt.per_group} = {fmt.n_teams} teams. "
+               f"{fmt.advance_per_group} per group{(' + ' + str(fmt.best_thirds) + ' best 3rds') if fmt.best_thirds else ''} advance to "
+               f"{fmt.n_knockout}-team knockout.")
+
+    # WC 2026 squad-strength prior (only relevant for that tournament)
+    wc_blend = 0.0
+    if fmt_name == "World Cup 2026 (48 teams)":
+        wc_blend = st.slider(
+            "WC 2026 squad-strength prior",
+            0.0, 0.7, 0.30, 0.05, key="t_wc_blend",
+            help=("Blend the model's historical-form predictions with current squad "
+                  "quality (Transfermarkt market values + bookmaker outright odds). "
+                  "0 = pure historical model, 0.3 = balanced (recommended), "
+                  "0.7 = mostly market view. Compensates for the model not knowing "
+                  "current squad / star-player availability."),
+        )
+
+    # Build groups
+    if seed_mode.startswith("Real"):
+        groups, unknown = resolve_groups(fmt_name, bundle)
+        if unknown:
+            st.warning(f"Unrecognised teams (treated as default-strength): {unknown}")
+        teams = [t for g in groups for t in g]
+        st.info(f"Using the actual official draw for **{fmt_name}**.")
+    else:
+        default_teams = top_n_by_elo(bundle, fmt.n_teams)
+        teams = st.multiselect(
+            f"Pick {fmt.n_teams} teams (default: top {fmt.n_teams} by Elo)",
+            all_teams, default=default_teams, key="t_teams"
+        )
+        if len(teams) != fmt.n_teams:
+            st.warning(f"Need exactly {fmt.n_teams} teams. Currently {len(teams)}.")
+            return
+        if seed_mode.startswith("Snake"):
+            ranked = sorted(teams, key=lambda t: -bundle.elo.rating(t))
+            groups = _snake_seed(ranked, fmt.n_groups)
+        else:
+            rng = np.random.default_rng(42)
+            shuffled = list(teams)
+            rng.shuffle(shuffled)
+            groups = [shuffled[i*fmt.per_group:(i+1)*fmt.per_group] for i in range(fmt.n_groups)]
+
+    with st.expander("Group draw preview", expanded=seed_mode.startswith("Real")):
+        cols = st.columns(min(fmt.n_groups, 4))
+        for i, g in enumerate(groups):
+            col = cols[i % len(cols)]
+            with col:
+                st.markdown(f"**Group {chr(ord('A') + i)}**")
+                rows = [{"Team": flagged(t), "Elo": int(bundle.elo.rating(t))} for t in g]
+                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+    # ---- predicted fixtures ----
+    with st.expander("Predicted fixtures", expanded=False):
+        mode = st.radio(
+            "Mode",
+            ["Most-likely outcomes (deterministic)", "Sampled tournament (re-roll for upsets)"],
+            horizontal=True, key="t_fix_mode",
+            help=("Most-likely = each fixture's score is the expected-points-maximising pick "
+                  "under the scoring rules below. Sampled = one random tournament drawn from "
+                  "the probability distribution; click Re-roll for a different one."),
+        )
+
+        exact_pts, result_pts, gd_pts = 4.0, 2.0, 1.0
+        draw_bonus = 0.0
+
+        if mode.startswith("Most-likely"):
+            st.markdown("### ⚙️ Tune scoring (advanced)")
+
+            st.caption(
+                "Defaults match the most common prediction contests (4 pts exact, 2 pt result). "
+                "Adjust if your contest uses different rules."
+            )
+
+            sc1, sc2, sc3, sc4 = st.columns(4)
+
+            exact_pts = sc1.number_input("Exact score pts", min_value=0.0, max_value=20.0,
+                                         value=4.0, step=0.5, key="t_exact_pts")
+
+            result_pts = sc2.number_input("Correct result pts", min_value=0.0, max_value=10.0,
+                                          value=2.0, step=0.5, key="t_result_pts")
+
+            gd_pts = sc3.number_input("Correct goal-diff bonus", min_value=0.0,
+                                      max_value=10.0, value=1.0, step=0.5, key="t_gd_pts",
+                                      help="Extra points if you got the goal-difference right "
+                                           "(e.g. predicted 2-1 and actual was 3-2).")
+
+            draw_bonus = sc4.number_input("Draw bias", min_value=0.0, max_value=1.0,
+                                          value=0.0, step=0.05, key="t_draw_bonus")
+
+            st.caption(
+                "Picks are EV-optimal across **all** scorelines for these rules."
+            )
+
+    # # ---- predicted fixtures ----
+    # with st.expander("Predicted fixtures", expanded=False):
+    #     mode = st.radio(
+    #         "Mode",
+    #         ["Most-likely outcomes (deterministic)", "Sampled tournament (re-roll for upsets)"],
+    #         horizontal=True, key="t_fix_mode",
+    #         help=("Most-likely = each fixture's score is the expected-points-maximising pick "
+    #               "under the scoring rules below. Sampled = one random tournament drawn from "
+    #               "the probability distribution; click Re-roll for a different one."),
+    #     )
+    #     # EV-optimisation tuning (collapsed by default; sensible defaults below work for
+    #     # standard 3-for-exact-1-for-result scoring used by most prediction contests)
+    #     exact_pts, result_pts, gd_pts = 3.0, 1.0, 0.0
+    #     draw_bonus = 0.15   # default catches the genuinely tight matches as draws
+    #     if mode.startswith("Most-likely"):
+    #         with st.expander("Tune scoring (advanced)", expanded=False):
+    #             st.caption(
+    #                 "Defaults match the most common prediction contests (3 pts exact, 1 pt result). "
+    #                 "Adjust if your contest uses different rules."
+    #             )
+    #             sc1, sc2, sc3, sc4 = st.columns(4)
+    #             exact_pts = sc1.number_input("Exact score pts", min_value=0.0, max_value=20.0,
+    #                                          value=3.0, step=0.5, key="t_exact_pts")
+    #             result_pts = sc2.number_input("Correct result pts", min_value=0.0, max_value=10.0,
+    #                                           value=1.0, step=0.5, key="t_result_pts")
+    #             gd_pts = sc3.number_input("Correct goal-diff bonus", min_value=0.0,
+    #                                        max_value=10.0, value=0.0, step=0.5, key="t_gd_pts",
+    #                                        help="Extra points if you got the goal-difference right "
+    #                                             "(e.g. predicted 2-1 and actual was 3-2). 0 if "
+    #                                             "your contest doesn't use this.")
+    #             draw_bonus = sc4.number_input("Draw bias", min_value=0.0, max_value=1.0,
+    #                                           value=0.15, step=0.05, key="t_draw_bonus",
+    #                                           help="Pure EV under default scoring picks zero "
+    #                                                "draws (no WC match has Draw as the most likely "
+    #                                                "result). 0.15 catches ~6 draws on the tightest "
+    #                                                "matches; 0.30 matches real WC draw frequency "
+    #                                                "(~25%) at the cost of some EV.")
+    #             st.caption(
+    #                 "Picks are EV-optimal across **all** scorelines for these rules. "
+    #                 "If a pick lands in a different result region than the headline H/D/A "
+    #                 "favourite, that's correct: the alternative result's modal scoreline is "
+    #                 "concentrated enough to outweigh the lost result point. Each alt score is "
+    #                 "tagged (H/D/A) so you can see which result it implies."
+    #             )
+
+        with st.spinner("Computing fixtures..."):
+            # Detect actual played WC 2026 matches from the latest data
+            actual_results = {}
+            n_actual = 0
+            if fmt_name == "World Cup 2026 (48 teams)":
+                intl_path = ROOT / "data" / "processed" / "internationals.parquet"
+                if intl_path.exists():
+                    try:
+                        intl_df = pd.read_parquet(intl_path)
+                        actual_results = get_actual_results(intl_df)
+                        n_actual = len(actual_results)
+                    except Exception:
+                        actual_results = {}
+                if n_actual > 0:
+                    st.success(f"✓ {n_actual} WC 2026 match{'es' if n_actual != 1 else ''} "
+                               f"detected with real results - using those instead of predictions.")
+            if mode.startswith("Most-likely"):
+                fixtures = predict_group_fixtures(
+                    bundle, groups, fmt_name=fmt_name, wc_blend=wc_blend,
+                    exact_pts=exact_pts, result_pts=result_pts, gd_pts=gd_pts,
+                    draw_bonus=draw_bonus, actual_results=actual_results,
+                )
+                rounds, champion, standings = predict_modal_bracket(
+                    bundle, fmt, groups, fmt_name=fmt_name, wc_blend=wc_blend,
+                    exact_pts=exact_pts, result_pts=result_pts, gd_pts=gd_pts,
+                    draw_bonus=draw_bonus, actual_results=actual_results,
+                )
+                sampled_xg_map = None
+            else:
+                import time as _time
+                if "sample_seed" not in st.session_state:
+                    st.session_state["sample_seed"] = int(_time.time())
+                cols = st.columns([1, 4])
+                if cols[0].button("Re-roll", key="t_reroll", type="primary"):
+                    st.session_state["sample_seed"] = int(_time.time() * 1000) % (2**32)
+                cols[1].caption(f"Sample #{st.session_state['sample_seed']} - click Re-roll for a different tournament")
+                fixtures, standings, rounds, champion = sample_one_tournament(
+                    bundle, fmt, groups, seed=st.session_state["sample_seed"],
+                    fmt_name=fmt_name, wc_blend=wc_blend,
+                )
+
+        view_by_stage, view_chrono, view_by_group = st.tabs(
+            ["By stage", "Chronological", "By group"]
+        )
+
+        # ---- By stage view: one section per tournament stage ----
+        with view_by_stage:
+            st.caption(
+                "Predictions organised by stage. Group cards show standings + every "
+                "fixture; knockout rounds render as a bracket. Played matches are "
+                "highlighted; everything else is the model's predicted score."
+            )
+
+            # ---- Group stage (visual cards) ----
+            st.markdown("### Group Stage")
+            n_played = sum(1 for f in fixtures if f.get("is_actual"))
+            n_total = len(fixtures)
+            if n_played > 0:
+                st.caption(f"{n_played} of {n_total} matches played (real results); "
+                           f"{n_total - n_played} predicted.")
+            else:
+                st.caption(f"All {n_total} matches predicted (tournament hasn't started yet).")
+            _render_group_cards(fixtures, standings, groups, fmt)
+
+            # ---- Knockout bracket (visual) ----
+            if rounds:
+                st.markdown("### Knockout Bracket")
+                ko_total = sum(len(r) for r in rounds)
+                ko_played = sum(1 for r in rounds for m in r if m.get("is_actual"))
+                if ko_played > 0:
+                    st.caption(f"{ko_played} of {ko_total} knockout matches played.")
+                _render_bracket(rounds, champion)
+
+        # ---- Chronological view (by real date when available, else by matchday) ----
+        with view_chrono:
+            has_dates = any("date" in f for f in fixtures)
+            if has_dates:
+                # Group fixtures by date, render each day as its own block
+                by_date: dict[str, list[dict]] = {}
+                for f in fixtures:
+                    by_date.setdefault(f.get("date", "?"), []).append(f)
+                for date in sorted(by_date):
+                    label = pd.Timestamp(date).strftime("%a %d %b %Y")
+                    st.markdown(f"**{label}**")
+                    rows = []
+                    for f in by_date[date]:
+                        marker = "✓ " if f.get("is_actual") else ""
+                        score_text = f"{marker}{f['score'][0]}–{f['score'][1]}"
+                        if not f.get("is_actual") and "score_prob" in f and f["score_prob"]:
+                            score_text += f" ({f['score_prob']*100:.0f}%)"
+                        row = {
+                            "Group":  chr(ord('A') + f["group_idx"]),
+                            "Home":   flagged(f["home"]),
+                            "Score":  score_text,
+                            "Away":   flagged(f["away"]),
+                        }
+                        if "p_home" in f:
+                            row["H %"] = f"{f['p_home']*100:.0f}%"
+                            row["D %"] = f"{f['p_draw']*100:.0f}%"
+                            row["A %"] = f"{f['p_away']*100:.0f}%"
+                        if f.get("alt_scores"):
+                            row["Alt scores"] = f["alt_scores"]
+                        row["Analyse"] = _match_url(f["home"], f["away"])
+                        rows.append(row)
+                    st.dataframe(
+                        pd.DataFrame(rows), hide_index=True, use_container_width=True,
+                        column_config={"Analyse": st.column_config.LinkColumn(
+                            "Analyse", display_text="Analyse", width="small")})
+            else:
+                for md in [1, 2, 3]:
+                    md_fixtures = [f for f in fixtures if f["matchday"] == md]
+                    if not md_fixtures:
+                        continue
+                    st.markdown(f"**Matchday {md}**")
+                    rows = []
+                    for f in md_fixtures:
+                        row = {
+                            "Group":  chr(ord('A') + f["group_idx"]),
+                            "Home":   flagged(f["home"]),
+                            "Score":  f"{f['score'][0]}–{f['score'][1]}",
+                            "Away":   flagged(f["away"]),
+                        }
+                        if "p_home" in f:
+                            row["H %"] = f"{f['p_home']*100:.0f}%"
+                            row["D %"] = f"{f['p_draw']*100:.0f}%"
+                            row["A %"] = f"{f['p_away']*100:.0f}%"
+                        rows.append(row)
+                    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+            for round_matches in rounds:
+                round_name = round_matches[0]["round"]
+                date_suffix = ""
+                if "date" in round_matches[0]:
+                    date_suffix = f"  ({pd.Timestamp(round_matches[0]['date']).strftime('%d %b')} onwards)"
+                st.markdown(f"**{round_name}**{date_suffix}")
+                rows = []
+                for m in round_matches:
+                    score_text = f"{m['score'][0]}–{m['score'][1]}"
+                    if m.get("pens"):
+                        score_text += f" → {m['winner']} (ET/pens)"
+                    row = {
+                        "Home":   flagged(m["home"]),
+                        "Score":  score_text,
+                        "Away":   flagged(m["away"]),
+                        "Win":    flagged(m["winner"]),
+                    }
+                    if "p_home" in m:
+                        row["H %"] = f"{m['p_home']*100:.0f}%"
+                        row["D %"] = f"{m['p_draw']*100:.0f}%"
+                        row["A %"] = f"{m['p_away']*100:.0f}%"
+                    rows.append(row)
+                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+            if champion:
+                st.success(f"Champion: **{champion}**")
+
+        # ---- By group view (each group + its 6 fixtures + standings) ----
+        with view_by_group:
+            group_tabs = st.tabs([f"Group {chr(ord('A') + i)}" for i in range(fmt.n_groups)])
+            for gi, tab in enumerate(group_tabs):
+                with tab:
+                    rows = []
+                    for f in [x for x in fixtures if x["group_idx"] == gi]:
+                        row = {}
+                        if "date" in f:
+                            row["Date"] = pd.Timestamp(f["date"]).strftime("%d %b")
+                        else:
+                            row["MD"] = f["matchday"]
+                        score_text = f"{f['score'][0]}–{f['score'][1]}"
+                        if "score_prob" in f and f["score_prob"]:
+                            score_text += f" ({f['score_prob']*100:.0f}%)"
+                        row.update({
+                            "Home":   flagged(f["home"]),
+                            "Score":  score_text,
+                            "Away":   flagged(f["away"]),
+                        })
+                        if "p_home" in f:
+                            row["H %"] = f"{f['p_home']*100:.0f}%"
+                            row["D %"] = f"{f['p_draw']*100:.0f}%"
+                            row["A %"] = f"{f['p_away']*100:.0f}%"
+                            row["xG"]  = f"{f['xg_home']:.2f}–{f['xg_away']:.2f}"
+                        if f.get("alt_scores"):
+                            row["Alt scores"] = f["alt_scores"]
+                        row["Analyse"] = _match_url(f["home"], f["away"])
+                        rows.append(row)
+                    st.dataframe(
+                        pd.DataFrame(rows), hide_index=True, use_container_width=True,
+                        column_config={
+                            "Analyse": st.column_config.LinkColumn(
+                                "Analyse", display_text="Analyse", width="small")
+                        },
+                    )
+                    st.caption("Final standings:")
+                    srows = [{"Pos": i + 1, "Team": flagged(t), "Pts": s["pts"],
+                              "GD": s["gd"], "GF": s["gf"]}
+                             for i, (t, s) in enumerate(standings[gi])]
+                    st.dataframe(pd.DataFrame(srows), hide_index=True, use_container_width=True)
+
+    if st.button("Run tournament simulation", key="t_run", type="primary"):
+        with st.spinner(f"Running {n_sims:,} tournament simulations..."):
+            result = simulate_knockout(bundle, fmt, groups, n_sims=int(n_sims),
+                                       fmt_name=fmt_name, wc_blend=wc_blend)
+        st.success(f"Done - {n_sims:,} tournaments simulated.")
+        st.info("These are the **real title odds** — how often each team won "
+                "across every simulated tournament, upsets included. This is the "
+                "reliable 'who will win' answer, and it can differ from the single "
+                "most-likely bracket above.")
+        st.subheader("Stage advancement probabilities")
+        # Pretty-format every '... %' column
+        styled = result.copy()
+        for col in [c for c in styled.columns if c.endswith(" %")]:
+            styled[col] = styled[col].map(lambda v: f"{v:.1f}%")
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        cA, cB = st.columns(2)
+        with cA:
+            st.subheader("Title favourites")
+            top = result.nlargest(10, "Champion %")
+            fig = px.bar(top, x="Team", y="Champion %",
+                         text=top["Champion %"].map(lambda v: f"{v:.1f}%"),
+                         color="Champion %", color_continuous_scale="Viridis")
+            fig.update_layout(height=400, coloraxis_showscale=False)
+            st.plotly_chart(fig, use_container_width=True)
+        with cB:
+            st.subheader("Reach the final")
+            if "Final %" in result.columns:
+                top = result.nlargest(10, "Final %")
+                fig = px.bar(top, x="Team", y="Final %",
+                             text=top["Final %"].map(lambda v: f"{v:.1f}%"),
+                             color="Final %", color_continuous_scale="Cividis")
+                fig.update_layout(height=400, coloraxis_showscale=False)
+                st.plotly_chart(fig, use_container_width=True)
+
+
+# ----------------------------------------------------------------------------
+# TAB 4: live data (powered by the FastAPI service)
+# ----------------------------------------------------------------------------
+def render_data():
+    # Data comes from parquet files refreshed daily by the GitHub Action.
+    # No live scraping at user request time (Streamlit Cloud can't run Selenium).
+    base = "in-process"
+    try:
+        leagues_list = api_client.fetch_leagues(base)
+    except Exception as e:
+        st.error(f"Could not list leagues: {e}")
+        return
+
+    fresh = api_client.fetch_freshness(base)
+    if not fresh.get("schedules"):
+        st.warning(
+            "Live data cache not yet populated. The daily workflow has to run once "
+            "before this tab has anything to show. Trigger it manually from the "
+            "Actions tab on GitHub, or wait for the next scheduled run (06:30 UTC).")
+        return
+    st.caption(
+        f"Data refreshed daily by the GitHub Action. "
+        f"Schedules cached: {fresh.get('schedules','-')}  ·  "
+        f"Lineups cached: {fresh.get('lineups','-') or 'not yet'}")
+
+    league = st.selectbox("League", leagues_list, key="data_league")
+
+    sub_fix, sub_res, sub_tab, sub_lup, sub_team = st.tabs(
+        ["Upcoming fixtures", "Recent results", "Standings", "Lineups", "Team focus"])
+
+    with sub_fix:
+        days = st.slider("Look-ahead (days)", 1, 60, 14, key="data_fix_days")
+        try:
+            rows = api_client.fetch_fixtures(base, league, days=days)
+        except Exception as e:
+            st.error(f"Fetch failed: {e}")
+            rows = []
+        if not rows:
+            st.info("No upcoming fixtures in this window.")
+        else:
+            df = pd.DataFrame(rows)[["date", "time", "home", "away", "venue", "week"]]
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+    with sub_res:
+        limit = st.slider("How many", 5, 100, 20, key="data_res_limit")
+        try:
+            rows = api_client.fetch_results(base, league, limit=limit)
+        except Exception as e:
+            st.error(f"Fetch failed: {e}")
+            rows = []
+        if not rows:
+            st.info("No completed matches found.")
+        else:
+            df = pd.DataFrame(rows)
+            df["score"] = df["home_goals"].astype(str) + " - " + df["away_goals"].astype(str)
+            st.dataframe(
+                df[["date", "home", "score", "away", "game_id"]],
+                use_container_width=True, hide_index=True)
+            st.caption("Copy a game_id and paste into the Lineups tab to see the starting XI.")
+
+    with sub_tab:
+        try:
+            rows = api_client.fetch_standings(base, league)
+        except Exception as e:
+            st.error(f"Fetch failed: {e}")
+            rows = []
+        if not rows:
+            st.info("No standings yet (season hasn't started or no completed matches).")
+        else:
+            df = pd.DataFrame(rows)[
+                ["rank", "team", "played", "wins", "draws", "losses",
+                 "goals_for", "goals_against", "goal_diff", "points"]
+            ]
+            st.dataframe(df, use_container_width=True, hide_index=True)
+
+    with sub_team:
+        try:
+            league_teams = api_client.fetch_league_teams(base, league)
+        except Exception as e:
+            st.error(f"Could not list teams: {e}")
+            league_teams = []
+        if not league_teams:
+            st.info("No teams available for this league yet.")
+        else:
+            team = st.selectbox("Team", league_teams, key="data_team_pick")
+            tc1, tc2 = st.columns([2, 1])
+            n_form = tc1.slider("Form window (matches)", 3, 20, 10, key="data_team_form_n")
+            n_lup = tc2.slider("Lineups to base prediction on", 3, 10, 5, key="data_team_lup_n")
+
+            # Form
+            try:
+                form = api_client.fetch_team_form(base, team, league, n=n_form)
+            except Exception as e:
+                st.error(f"Form fetch failed: {e}")
+                form = None
+            if form:
+                s = form["summary"]
+                k1, k2, k3, k4, k5 = st.columns(5)
+                k1.metric("Last " + str(s["played"]) + " played", s["played"])
+                k2.metric("W-D-L", f"{s['wins']}-{s['draws']}-{s['losses']}")
+                k3.metric("GF-GA", f"{s['goals_for']}-{s['goals_against']}")
+                k4.metric("Goal diff", s["goal_diff"])
+                k5.metric("Form (oldest→newest)", s["form"] or "—")
+                if form["matches"]:
+                    df = pd.DataFrame(form["matches"])
+                    df["score"] = df["team_goals"].astype(str) + "-" + df["opponent_goals"].astype(str)
+                    st.dataframe(
+                        df[["date", "venue", "opponent", "score", "result", "game_id"]],
+                        use_container_width=True, hide_index=True)
+
+            # Predicted XI (this also warms the lineups cache)
+            try:
+                pxi = api_client.fetch_predicted_xi(base, team, league, lookback=n_lup)
+            except Exception as e:
+                st.error(f"Predicted XI fetch failed: {e}")
+                pxi = None
+            if pxi and pxi.get("predicted_xi"):
+                st.markdown(f"### Predicted starting XI · {pxi['formation']} · "
+                            f"confidence: {pxi['confidence']}")
+                st.caption(pxi["method"])
+                buckets: dict[str, list] = {"GK": [], "DEF": [], "MID": [], "FW": []}
+                for p in pxi["predicted_xi"]:
+                    buckets.setdefault(p["bucket"], []).append(p)
+                xi_cols = st.columns(4)
+                for col, key in zip(xi_cols, ["GK", "DEF", "MID", "FW"]):
+                    col.markdown(f"**{key}**")
+                    for p in buckets[key]:
+                        col.markdown(
+                            f"`{p['position']:>4}` {p['name']}  "
+                            f"<span style='opacity:0.6'>· {p['start_freq']}</span>",
+                            unsafe_allow_html=True)
+
+            # Last N actual lineups (collapsed)
+            with st.expander("Show recent actual starting XIs"):
+                try:
+                    lups = api_client.fetch_team_lineups(base, team, league, n=n_lup)
+                except Exception as e:
+                    st.error(f"Lineups fetch failed: {e}")
+                    lups = None
+                if lups and lups.get("lineups"):
+                    for m in lups["lineups"]:
+                        st.markdown(f"**{m['date']} · vs {m['opponent']} ({m['venue']})**")
+                        df = pd.DataFrame(m["starting"])
+                        if not df.empty:
+                            st.dataframe(
+                                df[[c for c in ["number", "name", "position", "minutes"] if c in df.columns]],
+                                use_container_width=True, hide_index=True)
+
+    with sub_lup:
+        st.caption("FBref publishes lineups post-match. Pre-match XIs are not available here.")
+        gid = st.text_input("game_id (from Recent results)", key="data_lup_gid")
+        if gid:
+            try:
+                data = api_client.fetch_lineup(base, gid.strip(), league)
+            except Exception as e:
+                st.error(f"Fetch failed: {e}")
+                data = None
+            if data:
+                c1, c2 = st.columns(2)
+                for col, side in [(c1, "home"), (c2, "away")]:
+                    block = data.get(side)
+                    if not block:
+                        continue
+                    col.markdown(f"### {block['team']}")
+                    col.markdown("**Starting XI**")
+                    starters = pd.DataFrame(block["starting"])
+                    if not starters.empty:
+                        col.dataframe(
+                            starters[[c for c in ["number", "name", "position", "minutes"] if c in starters.columns]],
+                            use_container_width=True, hide_index=True)
+                    col.markdown("**Bench**")
+                    bench = pd.DataFrame(block["bench"])
+                    if not bench.empty:
+                        col.dataframe(
+                            bench[[c for c in ["number", "name", "position", "minutes"] if c in bench.columns]],
+                            use_container_width=True, hide_index=True)
+
+
+# ============================================================================
+# Dispatch
+# ============================================================================
+def _safe_render(fn) -> None:
+    """Run a tab renderer, but contain any unexpected error to a friendly
+    message instead of dumping a Python traceback to a paying customer."""
+    try:
+        fn()
+    except Exception:
+        st.error("Something went wrong loading this section. Please refresh the "
+                 "page. If it keeps happening, email support@wcpicks26.app.")
+        import traceback as _tb
+        print(_tb.format_exc())   # still logged server-side for debugging
+
+with tab_cup:
+    _safe_render(render_tournament)
+
+with tab_match:
+    _safe_render(render_match)
+
+if tab_more is not None:
+    with tab_more:
+        sub_league, sub_data = st.tabs(["League season", "Live data"])
+        with sub_league:
+            _safe_render(render_league)
+        with sub_data:
+            _safe_render(render_data)
+
+
+# ============================================================================
+# Footer
+# ============================================================================
+_FOOTER_HTML = """
+<div class="custom-footer">
+  <div style="margin-bottom: 0.6rem;">
+    <a href="?page=terms" target="_blank">Terms</a> ·
+    <a href="?page=privacy" target="_blank">Privacy</a> ·
+    <a href="?page=refunds" target="_blank">Refunds</a> ·
+    <a href="mailto:support@wcpicks26.app">Contact</a>
+  </div>
+  <div>
+    A statistical forecasting tool for prediction contests. Not a betting
+    service, not financial advice. Predictions are algorithmic and not
+    guaranteed, and past accuracy is no guarantee of future results.
+  </div>
+  <div style="margin-top: 0.6rem;">
+    Model: calibrated Elo + Pi-rating + Dixon-Coles + gradient-boosted ensemble ·
+    Data: <a href="https://www.football-data.co.uk" target="_blank">football-data.co.uk</a> ·
+    <a href="https://github.com/martj42/international_results" target="_blank">martj42</a> ·
+    <a href="https://understat.com" target="_blank">Understat</a>
+  </div>
+  <div style="margin-top: 0.8rem;">
+    <a href="https://github.com/jdgoated1/football-predictor" target="_blank">
+      ★ View source on GitHub
+    </a>
+  </div>
+</div>
+"""
+st.markdown(_FOOTER_HTML, unsafe_allow_html=True)

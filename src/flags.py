@@ -1,0 +1,422 @@
+"""Unicode flag emojis for international teams.
+
+Uses standard regional-indicator pairs for sovereign nations and the
+tag-sequence emojis for the UK home nations (Scotland, England, Wales).
+"""
+from __future__ import annotations
+
+COUNTRY_FLAGS: dict[str, str] = {
+    # --- WC 2026 teams (all 48) ---
+    "Mexico": "🇲🇽",
+    "South Korea": "🇰🇷",
+    "South Africa": "🇿🇦",
+    "Czech Republic": "🇨🇿",
+    "Canada": "🇨🇦",
+    "Switzerland": "🇨🇭",
+    "Qatar": "🇶🇦",
+    "Bosnia and Herzegovina": "🇧🇦",
+    "Brazil": "🇧🇷",
+    "Morocco": "🇲🇦",
+    "Scotland": "🏴󠁧󠁢󠁳󠁣󠁴󠁿",
+    "Haiti": "🇭🇹",
+    "United States": "🇺🇸",
+    "Paraguay": "🇵🇾",
+    "Australia": "🇦🇺",
+    "Turkey": "🇹🇷",
+    "Germany": "🇩🇪",
+    "Ecuador": "🇪🇨",
+    "Ivory Coast": "🇨🇮",
+    "Curaçao": "🇨🇼",
+    "Netherlands": "🇳🇱",
+    "Japan": "🇯🇵",
+    "Tunisia": "🇹🇳",
+    "Sweden": "🇸🇪",
+    "Belgium": "🇧🇪",
+    "Iran": "🇮🇷",
+    "Egypt": "🇪🇬",
+    "New Zealand": "🇳🇿",
+    "Spain": "🇪🇸",
+    "Uruguay": "🇺🇾",
+    "Saudi Arabia": "🇸🇦",
+    "Cape Verde": "🇨🇻",
+    "France": "🇫🇷",
+    "Senegal": "🇸🇳",
+    "Norway": "🇳🇴",
+    "Iraq": "🇮🇶",
+    "Argentina": "🇦🇷",
+    "Austria": "🇦🇹",
+    "Algeria": "🇩🇿",
+    "Jordan": "🇯🇴",
+    "Portugal": "🇵🇹",
+    "Colombia": "🇨🇴",
+    "Uzbekistan": "🇺🇿",
+    "DR Congo": "🇨🇩",
+    "England": "🏴󠁧󠁢󠁥󠁮󠁧󠁿",
+    "Croatia": "🇭🇷",
+    "Panama": "🇵🇦",
+    "Ghana": "🇬🇭",
+    # --- Other notable international teams ---
+    "Italy": "🇮🇹",
+    "Wales": "🏴󠁧󠁢󠁷󠁬󠁳󠁿",
+    "Northern Ireland": "🇬🇧",
+    "Ireland": "🇮🇪",
+    "Russia": "🇷🇺",
+    "Poland": "🇵🇱",
+    "Ukraine": "🇺🇦",
+    "Romania": "🇷🇴",
+    "Serbia": "🇷🇸",
+    "Hungary": "🇭🇺",
+    "Greece": "🇬🇷",
+    "Denmark": "🇩🇰",
+    "Finland": "🇫🇮",
+    "Iceland": "🇮🇸",
+    "Slovakia": "🇸🇰",
+    "Slovenia": "🇸🇮",
+    "Albania": "🇦🇱",
+    "Bulgaria": "🇧🇬",
+    "Montenegro": "🇲🇪",
+    "North Macedonia": "🇲🇰",
+    "Belarus": "🇧🇾",
+    "Moldova": "🇲🇩",
+    "Georgia": "🇬🇪",
+    "Armenia": "🇦🇲",
+    "Azerbaijan": "🇦🇿",
+    "Kazakhstan": "🇰🇿",
+    "China PR": "🇨🇳",
+    "China": "🇨🇳",
+    "India": "🇮🇳",
+    "Thailand": "🇹🇭",
+    "Vietnam": "🇻🇳",
+    "Indonesia": "🇮🇩",
+    "Malaysia": "🇲🇾",
+    "Philippines": "🇵🇭",
+    "Singapore": "🇸🇬",
+    "United Arab Emirates": "🇦🇪",
+    "Lebanon": "🇱🇧",
+    "Syria": "🇸🇾",
+    "Israel": "🇮🇱",
+    "Palestine": "🇵🇸",
+    "Oman": "🇴🇲",
+    "Bahrain": "🇧🇭",
+    "Kuwait": "🇰🇼",
+    "Yemen": "🇾🇪",
+    "Nigeria": "🇳🇬",
+    "Cameroon": "🇨🇲",
+    "Mali": "🇲🇱",
+    "Burkina Faso": "🇧🇫",
+    "Guinea": "🇬🇳",
+    "Gambia": "🇬🇲",
+    "Equatorial Guinea": "🇬🇶",
+    "Guinea-Bissau": "🇬🇼",
+    "Angola": "🇦🇴",
+    "Zambia": "🇿🇲",
+    "Zimbabwe": "🇿🇼",
+    "Tanzania": "🇹🇿",
+    "Kenya": "🇰🇪",
+    "Uganda": "🇺🇬",
+    "Ethiopia": "🇪🇹",
+    "Mauritania": "🇲🇷",
+    "Sudan": "🇸🇩",
+    "Libya": "🇱🇾",
+    "Mozambique": "🇲🇿",
+    "Namibia": "🇳🇦",
+    "Botswana": "🇧🇼",
+    "Madagascar": "🇲🇬",
+    "Comoros": "🇰🇲",
+    "Sierra Leone": "🇸🇱",
+    "Liberia": "🇱🇷",
+    "Togo": "🇹🇬",
+    "Benin": "🇧🇯",
+    "Niger": "🇳🇪",
+    "Chad": "🇹🇩",
+    "Central African Republic": "🇨🇫",
+    "Gabon": "🇬🇦",
+    "Congo": "🇨🇬",
+    "Rwanda": "🇷🇼",
+    "Burundi": "🇧🇮",
+    "Eritrea": "🇪🇷",
+    "Somalia": "🇸🇴",
+    "Djibouti": "🇩🇯",
+    "Cuba": "🇨🇺",
+    "Jamaica": "🇯🇲",
+    "Trinidad and Tobago": "🇹🇹",
+    "Honduras": "🇭🇳",
+    "Guatemala": "🇬🇹",
+    "El Salvador": "🇸🇻",
+    "Nicaragua": "🇳🇮",
+    "Costa Rica": "🇨🇷",
+    "Bolivia": "🇧🇴",
+    "Peru": "🇵🇪",
+    "Chile": "🇨🇱",
+    "Venezuela": "🇻🇪",
+    "Suriname": "🇸🇷",
+    "Guyana": "🇬🇾",
+    "Dominican Republic": "🇩🇴",
+    # --- Sovereign nations & territories often in friendlies / qualifiers ---
+    "Afghanistan": "🇦🇫",
+    "Bangladesh": "🇧🇩",
+    "Bhutan": "🇧🇹",
+    "Brunei": "🇧🇳",
+    "Cambodia": "🇰🇭",
+    "Hong Kong": "🇭🇰",
+    "Kyrgyzstan": "🇰🇬",
+    "Laos": "🇱🇦",
+    "Macau": "🇲🇴",
+    "Maldives": "🇲🇻",
+    "Mongolia": "🇲🇳",
+    "Myanmar": "🇲🇲",
+    "Nepal": "🇳🇵",
+    "North Korea": "🇰🇵",
+    "Pakistan": "🇵🇰",
+    "Sri Lanka": "🇱🇰",
+    "Taiwan": "🇹🇼",
+    "Tajikistan": "🇹🇯",
+    "Timor-Leste": "🇹🇱",
+    "Turkmenistan": "🇹🇲",
+    "East Timor": "🇹🇱",
+    "Andorra": "🇦🇩",
+    "Cyprus": "🇨🇾",
+    "Estonia": "🇪🇪",
+    "Faroe Islands": "🇫🇴",
+    "Gibraltar": "🇬🇮",
+    "Greenland": "🇬🇱",
+    "Guernsey": "🇬🇬",
+    "Iceland": "🇮🇸",
+    "Isle of Man": "🇮🇲",
+    "Jersey": "🇯🇪",
+    "Kosovo": "🇽🇰",
+    "Latvia": "🇱🇻",
+    "Liechtenstein": "🇱🇮",
+    "Lithuania": "🇱🇹",
+    "Luxembourg": "🇱🇺",
+    "Malta": "🇲🇹",
+    "Monaco": "🇲🇨",
+    "Republic of Ireland": "🇮🇪",
+    "San Marino": "🇸🇲",
+    "Vatican City": "🇻🇦",
+    "Åland Islands": "🇦🇽",
+    "Lesotho": "🇱🇸",
+    "Eswatini": "🇸🇿",
+    "Malawi": "🇲🇼",
+    "Mauritius": "🇲🇺",
+    "Réunion": "🇷🇪",
+    "Mayotte": "🇾🇹",
+    "Seychelles": "🇸🇨",
+    "São Tomé and Príncipe": "🇸🇹",
+    "Western Sahara": "🇪🇭",
+    "South Sudan": "🇸🇸",
+    "Zanzibar": "🇹🇿",
+    "Bahamas": "🇧🇸",
+    "Barbados": "🇧🇧",
+    "Belize": "🇧🇿",
+    "Bermuda": "🇧🇲",
+    "British Virgin Islands": "🇻🇬",
+    "Cayman Islands": "🇰🇾",
+    "Dominica": "🇩🇲",
+    "Grenada": "🇬🇩",
+    "Guadeloupe": "🇬🇵",
+    "Martinique": "🇲🇶",
+    "Montserrat": "🇲🇸",
+    "Puerto Rico": "🇵🇷",
+    "Saint Kitts and Nevis": "🇰🇳",
+    "Saint Lucia": "🇱🇨",
+    "Saint Martin": "🇲🇫",
+    "Saint Barthélemy": "🇧🇱",
+    "Saint Pierre and Miquelon": "🇵🇲",
+    "Saint Vincent and the Grenadines": "🇻🇨",
+    "Sint Maarten": "🇸🇽",
+    "Anguilla": "🇦🇮",
+    "Antigua and Barbuda": "🇦🇬",
+    "Aruba": "🇦🇼",
+    "Bonaire": "🇧🇶",
+    "French Guiana": "🇬🇫",
+    "Turks and Caicos Islands": "🇹🇨",
+    "American Samoa": "🇦🇸",
+    "Cook Islands": "🇨🇰",
+    "Fiji": "🇫🇯",
+    "Guam": "🇬🇺",
+    "Kiribati": "🇰🇮",
+    "Marshall Islands": "🇲🇭",
+    "Micronesia": "🇫🇲",
+    "Nauru": "🇳🇷",
+    "New Caledonia": "🇳🇨",
+    "Niue": "🇳🇺",
+    "Northern Mariana Islands": "🇲🇵",
+    "Palau": "🇵🇼",
+    "Papua New Guinea": "🇵🇬",
+    "Samoa": "🇼🇸",
+    "Solomon Islands": "🇸🇧",
+    "Tahiti": "🇵🇫",
+    "Tonga": "🇹🇴",
+    "Tuvalu": "🇹🇻",
+    "Vanuatu": "🇻🇺",
+    "Falkland Islands": "🇫🇰",
+    "Quebec": "🇨🇦",
+    "United States Virgin Islands": "🇻🇮",
+    "Saint Helena": "🇸🇭",
+    "Western Armenia": "🇦🇲",
+    "Iraqi Kurdistan": "🇮🇶",
+    "Northern Cyprus": "🇨🇾",
+    "Chagos Islands": "🇮🇴",
+}
+
+
+def flag(team: str) -> str:
+    """Return Unicode flag emoji for a team. Empty string if unknown."""
+    return COUNTRY_FLAGS.get(team, "")
+
+
+def flagged(team: str, prefix: bool = True) -> str:
+    """Return '🇪🇸 Spain' (prefix=True) or 'Spain 🇪🇸' style string.
+    Falls back to just the team name if no flag is known."""
+    f = flag(team)
+    if not f:
+        return team
+    return f"{f} {team}" if prefix else f"{team} {f}"
+
+
+# ISO 3166-1 alpha-2 codes (lowercase) - used to fetch flag images from flagcdn.com.
+# Covers every team in the bundle that has a Unicode flag emoji above. Streamlit
+# Cloud's Linux fonts don't render regional-indicator flag emoji reliably, so we
+# embed real flag images instead inside HTML-rendered widgets.
+ISO_ALPHA2: dict[str, str] = {
+    # WC 2026
+    "Mexico": "mx", "South Korea": "kr", "South Africa": "za", "Czech Republic": "cz",
+    "Canada": "ca", "Switzerland": "ch", "Qatar": "qa", "Bosnia and Herzegovina": "ba",
+    "Brazil": "br", "Morocco": "ma", "Haiti": "ht", "United States": "us",
+    "Paraguay": "py", "Australia": "au", "Turkey": "tr", "Germany": "de",
+    "Ecuador": "ec", "Ivory Coast": "ci", "Curaçao": "cw", "Netherlands": "nl",
+    "Japan": "jp", "Tunisia": "tn", "Sweden": "se", "Belgium": "be",
+    "Iran": "ir", "Egypt": "eg", "New Zealand": "nz", "Spain": "es",
+    "Uruguay": "uy", "Saudi Arabia": "sa", "Cape Verde": "cv", "France": "fr",
+    "Senegal": "sn", "Norway": "no", "Iraq": "iq", "Argentina": "ar",
+    "Austria": "at", "Algeria": "dz", "Jordan": "jo", "Portugal": "pt",
+    "Colombia": "co", "Uzbekistan": "uz", "DR Congo": "cd", "Croatia": "hr",
+    "Panama": "pa", "Ghana": "gh",
+    # Other internationals
+    "Italy": "it", "Ireland": "ie", "Russia": "ru", "Poland": "pl",
+    "Ukraine": "ua", "Romania": "ro", "Serbia": "rs", "Hungary": "hu",
+    "Greece": "gr", "Denmark": "dk", "Finland": "fi", "Iceland": "is",
+    "Slovakia": "sk", "Slovenia": "si", "Albania": "al", "Bulgaria": "bg",
+    "Montenegro": "me", "North Macedonia": "mk", "Belarus": "by", "Moldova": "md",
+    "Georgia": "ge", "Armenia": "am", "Azerbaijan": "az", "Kazakhstan": "kz",
+    "China PR": "cn", "China": "cn", "India": "in", "Thailand": "th",
+    "Vietnam": "vn", "Indonesia": "id", "Malaysia": "my", "Philippines": "ph",
+    "Singapore": "sg", "United Arab Emirates": "ae", "Lebanon": "lb", "Syria": "sy",
+    "Israel": "il", "Palestine": "ps", "Oman": "om", "Bahrain": "bh",
+    "Kuwait": "kw", "Yemen": "ye", "Nigeria": "ng", "Cameroon": "cm",
+    "Mali": "ml", "Burkina Faso": "bf", "Guinea": "gn", "Gambia": "gm",
+    "Equatorial Guinea": "gq", "Guinea-Bissau": "gw", "Angola": "ao", "Zambia": "zm",
+    "Zimbabwe": "zw", "Tanzania": "tz", "Kenya": "ke", "Uganda": "ug",
+    "Ethiopia": "et", "Mauritania": "mr", "Sudan": "sd", "Libya": "ly",
+    "Mozambique": "mz", "Namibia": "na", "Botswana": "bw", "Madagascar": "mg",
+    "Comoros": "km", "Sierra Leone": "sl", "Liberia": "lr", "Togo": "tg",
+    "Benin": "bj", "Niger": "ne", "Chad": "td", "Central African Republic": "cf",
+    "Gabon": "ga", "Congo": "cg", "Rwanda": "rw", "Burundi": "bi",
+    "Eritrea": "er", "Somalia": "so", "Djibouti": "dj", "Cuba": "cu",
+    "Jamaica": "jm", "Trinidad and Tobago": "tt", "Honduras": "hn", "Guatemala": "gt",
+    "El Salvador": "sv", "Nicaragua": "ni", "Costa Rica": "cr", "Bolivia": "bo",
+    "Peru": "pe", "Chile": "cl", "Venezuela": "ve", "Suriname": "sr",
+    "Guyana": "gy", "Dominican Republic": "do",
+    # Extras added for full FIFA coverage
+    "Afghanistan": "af", "Bangladesh": "bd", "Bhutan": "bt", "Brunei": "bn",
+    "Cambodia": "kh", "Hong Kong": "hk", "Kyrgyzstan": "kg", "Laos": "la",
+    "Macau": "mo", "Maldives": "mv", "Mongolia": "mn", "Myanmar": "mm",
+    "Nepal": "np", "North Korea": "kp", "Pakistan": "pk", "Sri Lanka": "lk",
+    "Taiwan": "tw", "Tajikistan": "tj", "Timor-Leste": "tl", "Turkmenistan": "tm",
+    "East Timor": "tl", "Andorra": "ad", "Cyprus": "cy", "Estonia": "ee",
+    "Faroe Islands": "fo", "Gibraltar": "gi", "Greenland": "gl", "Guernsey": "gg",
+    "Isle of Man": "im", "Jersey": "je", "Kosovo": "xk", "Latvia": "lv",
+    "Liechtenstein": "li", "Lithuania": "lt", "Luxembourg": "lu", "Malta": "mt",
+    "Monaco": "mc", "Republic of Ireland": "ie", "San Marino": "sm",
+    "Vatican City": "va", "Åland Islands": "ax", "Lesotho": "ls", "Eswatini": "sz",
+    "Malawi": "mw", "Mauritius": "mu", "Réunion": "re", "Mayotte": "yt",
+    "Seychelles": "sc", "São Tomé and Príncipe": "st", "Western Sahara": "eh",
+    "South Sudan": "ss", "Bahamas": "bs", "Barbados": "bb", "Belize": "bz",
+    "Bermuda": "bm", "British Virgin Islands": "vg", "Cayman Islands": "ky",
+    "Dominica": "dm", "Grenada": "gd", "Guadeloupe": "gp", "Martinique": "mq",
+    "Montserrat": "ms", "Puerto Rico": "pr", "Saint Kitts and Nevis": "kn",
+    "Saint Lucia": "lc", "Saint Martin": "mf", "Saint Barthélemy": "bl",
+    "Saint Pierre and Miquelon": "pm", "Saint Vincent and the Grenadines": "vc",
+    "Sint Maarten": "sx", "Anguilla": "ai", "Antigua and Barbuda": "ag",
+    "Aruba": "aw", "Bonaire": "bq", "French Guiana": "gf",
+    "Turks and Caicos Islands": "tc", "American Samoa": "as", "Cook Islands": "ck",
+    "Fiji": "fj", "Guam": "gu", "Kiribati": "ki", "Marshall Islands": "mh",
+    "Micronesia": "fm", "Nauru": "nr", "New Caledonia": "nc", "Niue": "nu",
+    "Northern Mariana Islands": "mp", "Palau": "pw", "Papua New Guinea": "pg",
+    "Samoa": "ws", "Solomon Islands": "sb", "Tahiti": "pf", "Tonga": "to",
+    "Tuvalu": "tv", "Vanuatu": "vu", "Falkland Islands": "fk",
+    "United States Virgin Islands": "vi", "Saint Helena": "sh",
+    "Chagos Islands": "io",
+}
+
+# UK home nations + special-case subdivisions use flagcdn's gb-* codes (PNG only).
+ISO_SUBDIVISION: dict[str, str] = {
+    "England": "gb-eng",
+    "Scotland": "gb-sct",
+    "Wales": "gb-wls",
+    "Northern Ireland": "gb-nir",
+}
+
+
+# FIFA-style 3-letter codes — used for compact group/bracket tables where the
+# full country name would truncate. Covers every team across the supported
+# tournament draws (real_groups). Unmapped teams fall back to the first 3
+# letters uppercased.
+TEAM_CODES: dict[str, str] = {
+    # WC2026
+    "Mexico": "MEX", "South Korea": "KOR", "South Africa": "RSA", "Czech Republic": "CZE",
+    "Canada": "CAN", "Switzerland": "SUI", "Qatar": "QAT", "Bosnia and Herzegovina": "BIH",
+    "Brazil": "BRA", "Morocco": "MAR", "Scotland": "SCO", "Haiti": "HAI",
+    "United States": "USA", "Paraguay": "PAR", "Australia": "AUS", "Turkey": "TUR",
+    "Germany": "GER", "Ecuador": "ECU", "Ivory Coast": "CIV", "Curaçao": "CUW",
+    "Netherlands": "NED", "Japan": "JPN", "Tunisia": "TUN", "Sweden": "SWE",
+    "Belgium": "BEL", "Iran": "IRN", "Egypt": "EGY", "New Zealand": "NZL",
+    "Spain": "ESP", "Uruguay": "URU", "Saudi Arabia": "KSA", "Cape Verde": "CPV",
+    "France": "FRA", "Senegal": "SEN", "Norway": "NOR", "Iraq": "IRQ",
+    "Argentina": "ARG", "Austria": "AUT", "Algeria": "ALG", "Jordan": "JOR",
+    "Portugal": "POR", "Colombia": "COL", "Uzbekistan": "UZB", "DR Congo": "COD",
+    "England": "ENG", "Croatia": "CRO", "Panama": "PAN", "Ghana": "GHA",
+    # Other tournament teams (WC2022 / Euro 2024 / AFCON / Copa America)
+    "Wales": "WAL", "Poland": "POL", "Denmark": "DEN", "Costa Rica": "CRC",
+    "Serbia": "SRB", "Cameroon": "CMR", "Italy": "ITA", "Hungary": "HUN",
+    "Slovenia": "SVN", "Slovakia": "SVK", "Romania": "ROU", "Ukraine": "UKR",
+    "Georgia": "GEO", "Albania": "ALB", "Nigeria": "NGA", "Equatorial Guinea": "EQG",
+    "Guinea-Bissau": "GNB", "Mozambique": "MOZ", "Guinea": "GUI", "Gambia": "GAM",
+    "Mali": "MLI", "Namibia": "NAM", "Angola": "ANG", "Burkina Faso": "BFA",
+    "Mauritania": "MTN", "Zambia": "ZAM", "Tanzania": "TAN", "Peru": "PER",
+    "Chile": "CHI", "Venezuela": "VEN", "Jamaica": "JAM", "Bolivia": "BOL",
+}
+
+
+def team_code(team: str) -> str:
+    """FIFA-style 3-letter code for a team (e.g. 'Mexico' -> 'MEX').
+    Falls back to the first 3 letters uppercased for unmapped teams."""
+    if team in TEAM_CODES:
+        return TEAM_CODES[team]
+    cleaned = "".join(ch for ch in team if ch.isalpha())
+    return (cleaned[:3] or team[:3]).upper()
+
+
+def flag_code(team: str) -> str | None:
+    """Return the flagcdn slug for the team, or None if no real flag is available."""
+    if team in ISO_SUBDIVISION:
+        return ISO_SUBDIVISION[team]
+    return ISO_ALPHA2.get(team)
+
+
+def flag_img_html(team: str, height: int = 12) -> str:
+    """Return an `<img>` tag (flagcdn PNG) for the team, or empty if unknown.
+
+    Use this in HTML-rendered widgets (group cards, bracket) because Streamlit
+    Cloud's Linux fonts don't render Unicode regional-indicator flag emoji."""
+    code = flag_code(team)
+    if not code:
+        return ""
+    # flagcdn serves 16x12, 24x18, 32x24, 40x30, 48x36, 56x42, 64x48, 80x60 PNGs
+    sizes = {12: "16x12", 14: "20x15", 16: "24x18", 18: "24x18", 20: "32x24", 24: "32x24"}
+    size = sizes.get(height, "24x18")
+    return (f'<img src="https://flagcdn.com/{size}/{code}.png" '
+            f'class="ti-flag" alt="" loading="lazy" '
+            f'style="height:{height}px;width:auto;vertical-align:-2px;'
+            f'border-radius:2px;margin-right:5px">')

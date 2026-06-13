@@ -1,0 +1,16 @@
+pandas
+numpy
+scipy
+scikit-learn
+xgboost
+lightgbm
+catboost
+streamlit
+plotly
+requests
+joblib
+pyarrow
+soccerdata
+fastapi
+uvicorn[standard]
+httpx
