@@ -92,7 +92,3 @@ Daily retraining is handled by the GitHub Action at `.github/workflows/daily-upd
 - `app.py` - Streamlit UI (Single match / League season / Tournament tabs)
 - `data/processed/` - cached parquet files used at runtime
 - `models/` - trained predictor bundles (joblib)
-
-## License
-
-MIT.
